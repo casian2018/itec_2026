@@ -1,0 +1,20 @@
+{
+  "name": "itecify",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,server -c cyan,green \"npm run dev --workspace @itecify/web\" \"npm run dev --workspace @itecify/server\"",
+    "dev:web": "npm run dev --workspace @itecify/web",
+    "dev:server": "npm run dev --workspace @itecify/server",
+    "build": "npm run build --workspaces",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.8.3"
+  }
+}
