@@ -15,6 +15,169 @@
   --danger: #fb7185;
 }
 
+.ide-theme-root {
+  --bg: #1e1e1e;
+  --bg-elevated: #181818;
+  --bg-panel: #252526;
+  --bg-panel-soft: #2d2d2d;
+  --line: #2b2b2b;
+  --line-strong: #3c3c3c;
+  --text-primary: #cccccc;
+  --text-secondary: #bdbdbd;
+  --text-muted: #8b8b8b;
+  --accent: #007acc;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(0, 122, 204, 0.18);
+  --accent-line: rgba(0, 122, 204, 0.34);
+  --danger: #f14c4c;
+  --editor-shell: #1e1e1e;
+  --editor-inline: #1e1e1e;
+  --overlay-panel: rgba(30, 30, 30, 0.96);
+  --terminal-bg: #1e1e1e;
+  --terminal-text: #cccccc;
+  --terminal-muted: #858585;
+  --surface-chip: #313131;
+  --select-bg: #0b1220;
+  --preview-frame: #ffffff;
+  --empty-overlay: rgba(30, 30, 30, 0.95);
+  --titlebar-bg: #181818;
+  --activitybar-bg: #181818;
+  --sidebar-bg: #252526;
+  --editor-tab-bg: #2d2d2d;
+  --editor-tab-active-bg: #1e1e1e;
+  --editor-tab-hover-bg: #323233;
+  --panel-bg: #181818;
+  --statusbar-bg: #007acc;
+  --statusbar-text: #ffffff;
+  --page-gradient: linear-gradient(180deg, #111111 0%, #1b1b1b 100%);
+  background: var(--page-gradient);
+  color: var(--text-primary);
+  color-scheme: dark;
+}
+
+.ide-theme-root[data-ide-theme="light"] {
+  --bg: #edf3fb;
+  --bg-elevated: rgba(255, 255, 255, 0.84);
+  --bg-panel: rgba(255, 255, 255, 0.88);
+  --bg-panel-soft: rgba(15, 23, 42, 0.05);
+  --line: rgba(15, 23, 42, 0.1);
+  --line-strong: rgba(15, 23, 42, 0.18);
+  --text-primary: #132033;
+  --text-secondary: #31445c;
+  --text-muted: #6b7b8f;
+  --accent: #2563eb;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(37, 99, 235, 0.08);
+  --accent-line: rgba(37, 99, 235, 0.18);
+  --danger: #e11d48;
+  --editor-shell: #f7fbff;
+  --editor-inline: #ffffff;
+  --overlay-panel: rgba(255, 255, 255, 0.92);
+  --terminal-bg: linear-gradient(180deg, #f5f8fc, #eef3fa);
+  --terminal-text: #1f2937;
+  --terminal-muted: #7c8ba1;
+  --surface-chip: rgba(15, 23, 42, 0.05);
+  --select-bg: #ffffff;
+  --preview-frame: #ffffff;
+  --empty-overlay: rgba(255, 255, 255, 0.92);
+  --titlebar-bg: #f3f6fb;
+  --activitybar-bg: #e8edf5;
+  --sidebar-bg: #f7f9fc;
+  --editor-tab-bg: #edf2f7;
+  --editor-tab-active-bg: #ffffff;
+  --editor-tab-hover-bg: #e5ebf4;
+  --panel-bg: #f7f9fc;
+  --statusbar-bg: #2563eb;
+  --statusbar-text: #ffffff;
+  --page-gradient:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.1), transparent 32%),
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.08), transparent 24%),
+    linear-gradient(180deg, #f6f9ff 0%, #e8eef7 100%);
+  color-scheme: light;
+}
+
+.ide-theme-root[data-ide-theme="github"] {
+  --bg: #f6f8fa;
+  --bg-elevated: rgba(255, 255, 255, 0.92);
+  --bg-panel: rgba(255, 255, 255, 0.94);
+  --bg-panel-soft: rgba(36, 41, 47, 0.04);
+  --line: rgba(27, 31, 36, 0.1);
+  --line-strong: rgba(27, 31, 36, 0.18);
+  --text-primary: #24292f;
+  --text-secondary: #3b4450;
+  --text-muted: #57606a;
+  --accent: #0969da;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(9, 105, 218, 0.08);
+  --accent-line: rgba(9, 105, 218, 0.18);
+  --danger: #cf222e;
+  --editor-shell: #ffffff;
+  --editor-inline: #f6f8fa;
+  --overlay-panel: rgba(255, 255, 255, 0.94);
+  --terminal-bg: linear-gradient(180deg, #ffffff, #f6f8fa);
+  --terminal-text: #24292f;
+  --terminal-muted: #6e7781;
+  --surface-chip: rgba(27, 31, 36, 0.04);
+  --select-bg: #ffffff;
+  --preview-frame: #ffffff;
+  --empty-overlay: rgba(255, 255, 255, 0.94);
+  --titlebar-bg: #f6f8fa;
+  --activitybar-bg: #eef2f7;
+  --sidebar-bg: #f6f8fa;
+  --editor-tab-bg: #eef2f7;
+  --editor-tab-active-bg: #ffffff;
+  --editor-tab-hover-bg: #e4e9ef;
+  --panel-bg: #f6f8fa;
+  --statusbar-bg: #0969da;
+  --statusbar-text: #ffffff;
+  --page-gradient:
+    radial-gradient(circle at top left, rgba(9, 105, 218, 0.08), transparent 32%),
+    radial-gradient(circle at top right, rgba(47, 129, 247, 0.06), transparent 24%),
+    linear-gradient(180deg, #f8fafc 0%, #edf2f7 100%);
+  color-scheme: light;
+}
+
+.ide-theme-root[data-ide-theme="neon"] {
+  --bg: #090312;
+  --bg-elevated: rgba(14, 8, 28, 0.88);
+  --bg-panel: rgba(18, 10, 36, 0.92);
+  --bg-panel-soft: rgba(255, 255, 255, 0.04);
+  --line: rgba(192, 132, 252, 0.18);
+  --line-strong: rgba(192, 132, 252, 0.3);
+  --text-primary: #f6edff;
+  --text-secondary: #dccff7;
+  --text-muted: #a88bcd;
+  --accent: #c084fc;
+  --accent-contrast: #14051f;
+  --accent-soft: rgba(192, 132, 252, 0.12);
+  --accent-line: rgba(192, 132, 252, 0.26);
+  --danger: #fb7185;
+  --editor-shell: #0f0820;
+  --editor-inline: #140b28;
+  --overlay-panel: rgba(18, 10, 36, 0.9);
+  --terminal-bg: linear-gradient(180deg, #11071f, #0b0416);
+  --terminal-text: #efe8ff;
+  --terminal-muted: #9170b8;
+  --surface-chip: rgba(255, 255, 255, 0.04);
+  --select-bg: #140b28;
+  --preview-frame: #ffffff;
+  --empty-overlay: rgba(15, 8, 32, 0.92);
+  --titlebar-bg: #11071f;
+  --activitybar-bg: #11071f;
+  --sidebar-bg: #17102d;
+  --editor-tab-bg: #1d1238;
+  --editor-tab-active-bg: #140b28;
+  --editor-tab-hover-bg: #241744;
+  --panel-bg: #140b28;
+  --statusbar-bg: #7c3aed;
+  --statusbar-text: #f6edff;
+  --page-gradient:
+    radial-gradient(circle at top left, rgba(192, 132, 252, 0.16), transparent 30%),
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.1), transparent 24%),
+    linear-gradient(180deg, #12071f 0%, #090312 100%);
+  color-scheme: dark;
+}
+
 @theme inline {
   --color-background: var(--bg);
   --color-foreground: var(--text-primary);
@@ -27,10 +190,7 @@
 }
 
 html {
-  background:
-    radial-gradient(circle at top left, rgba(82, 199, 184, 0.1), transparent 30%),
-    radial-gradient(circle at top right, rgba(245, 158, 11, 0.08), transparent 24%),
-    linear-gradient(180deg, #0a1322 0%, #07101c 100%);
+  background: #111111;
 }
 
 body {
@@ -53,6 +213,6 @@ textarea {
 }
 
 ::selection {
-  background: rgba(82, 199, 184, 0.35);
+  background: rgba(0, 122, 204, 0.35);
   color: #ffffff;
 }

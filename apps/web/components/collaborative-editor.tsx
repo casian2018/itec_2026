@@ -2,13 +2,18 @@
 
 import { useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
+import {
+  getMonacoThemeName,
+  registerMonacoThemes,
+  type IdeThemeId,
+} from "@/lib/ide-theme";
 import type { CursorPosition, RemoteCursor } from "@/lib/socket";
 import type { editor as MonacoEditorNamespace } from "monaco-editor";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full min-h-[360px] items-center justify-center bg-[#0b1220] text-sm text-[var(--text-muted)]">
+    <div className="flex h-full min-h-[360px] items-center justify-center bg-[var(--editor-shell)] text-sm text-[var(--text-muted)]">
       Loading editor...
     </div>
   ),
@@ -22,6 +27,8 @@ type CollaborativeEditorProps = {
   onCursorChange: (position: CursorPosition) => void;
   remoteCursors: RemoteCursor[];
   language?: string;
+  readOnly?: boolean;
+  ideTheme: IdeThemeId;
 };
 
 const cursorThemes = [
@@ -56,13 +63,48 @@ function cursorThemeFor(socketId: string) {
   return cursorThemes[hash % cursorThemes.length];
 }
 
+function languageLabel(language: string) {
+  if (language === "javascript") {
+    return "JavaScript";
+  }
+
+  if (language === "python") {
+    return "Python";
+  }
+
+  if (language === "cpp") {
+    return "C++";
+  }
+
+  if (language === "html") {
+    return "HTML";
+  }
+
+  if (language === "css") {
+    return "CSS";
+  }
+
+  if (language === "json") {
+    return "JSON";
+  }
+
+  if (language === "markdown") {
+    return "Markdown";
+  }
+
+  return "text";
+}
+
 export function CollaborativeEditor({
   value,
   onChange,
   onCursorChange,
   remoteCursors,
   language = "javascript",
+  readOnly = false,
+  ideTheme,
 }: CollaborativeEditorProps) {
+  const showEmptyState = value.trim().length === 0;
   const editorRef = useRef<MonacoEditorNamespace.IStandaloneCodeEditor | null>(
     null,
   );
@@ -122,6 +164,10 @@ export function CollaborativeEditor({
     monacoRef.current = monaco;
 
     editor.onDidChangeCursorPosition((event) => {
+      if (readOnly) {
+        return;
+      }
+
       onCursorChange({
         lineNumber: event.position.lineNumber,
         column: event.position.column,
@@ -131,6 +177,10 @@ export function CollaborativeEditor({
     const position = editor.getPosition();
 
     if (position) {
+      if (readOnly) {
+        return;
+      }
+
       onCursorChange({
         lineNumber: position.lineNumber,
         column: position.column,
@@ -139,16 +189,19 @@ export function CollaborativeEditor({
   }
 
   return (
-    <div className="h-full min-h-0">
+    <div className="relative h-full min-h-0">
       <MonacoEditor
         height="100%"
         language={language}
-        theme="vs-dark"
+        beforeMount={registerMonacoThemes}
+        theme={getMonacoThemeName(ideTheme)}
         value={value}
         onMount={handleMount}
         onChange={(nextValue) => onChange(nextValue ?? "")}
         options={{
           automaticLayout: true,
+          readOnly,
+          domReadOnly: readOnly,
           minimap: { enabled: false },
           fontSize: 15,
           fontFamily: "var(--font-ibm-plex-mono)",
@@ -164,6 +217,17 @@ export function CollaborativeEditor({
           wordWrap: "on",
         }}
       />
+      {showEmptyState ? (
+        <div className="pointer-events-none absolute left-3 top-3 z-20 max-w-sm border border-[var(--line)] bg-[var(--empty-overlay)] px-4 py-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+            Empty Editor
+          </p>
+          <p className="mt-2 text-[13px] leading-6 text-[var(--text-secondary)]">
+            Start typing {languageLabel(language)} or switch files. The shared
+            workspace syncs per file as soon as content appears.
+          </p>
+        </div>
+      ) : null}
       <style jsx global>{`
         .monaco-editor .remote-cursor-cyan,
         .monaco-editor .remote-cursor-amber,

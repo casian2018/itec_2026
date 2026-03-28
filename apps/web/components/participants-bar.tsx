@@ -22,15 +22,19 @@ export function ParticipantsBar({
   currentUserName,
   currentUserSocketId,
 }: ParticipantsBarProps) {
+  const isSoloRoom = participants.length <= 1;
+
   return (
-    <section className="border-b border-[rgba(148,163,184,0.08)] bg-[linear-gradient(180deg,rgba(255,255,255,0.018),rgba(255,255,255,0.008))] px-5 py-3 lg:px-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <section className="border-b border-[var(--line)] bg-[var(--titlebar-bg)] px-3 py-2">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[var(--text-muted)]">
-            Participants
+          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
+            Session
           </p>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">
-            Everyone currently connected to this shared room.
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            {isSoloRoom
+              ? "Only your client is connected to this workspace."
+              : "Connected collaborators in the current workspace."}
           </p>
         </div>
 
@@ -39,28 +43,31 @@ export function ParticipantsBar({
             const isCurrentUser =
               participant.socketId === currentUserSocketId ||
               participant.name === currentUserName;
+            const displayName = isCurrentUser
+              ? currentUserName
+              : participant.name;
 
             return (
               <div
                 key={participant.socketId}
-                className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 ${
+                className={`inline-flex h-8 items-center gap-2 border px-2.5 ${
                   isCurrentUser
-                    ? "border-[rgba(82,199,184,0.24)] bg-[rgba(82,199,184,0.12)] text-white"
-                    : "border-[rgba(148,163,184,0.12)] bg-white/[0.03] text-[var(--text-secondary)]"
+                    ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--text-primary)]"
+                    : "border-[rgba(148,163,184,0.12)] bg-[var(--bg-panel-soft)] text-[var(--text-secondary)]"
                 }`}
               >
                 <span
-                  className={`flex h-7 w-7 items-center justify-center rounded-full font-mono text-[11px] ${
+                  className={`flex h-5 w-5 items-center justify-center border font-mono text-[10px] ${
                     isCurrentUser
-                      ? "bg-[rgba(82,199,184,0.16)] text-[var(--accent)]"
-                      : "bg-white/[0.05] text-[var(--text-muted)]"
+                      ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                      : "border-[var(--line)] bg-[var(--surface-chip)] text-[var(--text-muted)]"
                   }`}
                 >
-                  {initialsFor(participant.name)}
+                  {initialsFor(displayName)}
                 </span>
-                <span className="text-sm font-medium">{participant.name}</span>
+                <span className="text-xs font-medium">{displayName}</span>
                 {isCurrentUser ? (
-                  <span className="rounded-full bg-black/20 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
+                  <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
                     You
                   </span>
                 ) : null}

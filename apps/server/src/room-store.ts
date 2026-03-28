@@ -1,15 +1,40 @@
 import type {
   AiBlock,
-  AiBlockStatus,
+  IdeThemeId,
   Participant,
+  RoomSnapshot,
   RoomState,
+  TerminalEntry,
+  WorkspaceFileLanguage,
+  WorkspacePreviewState,
+  WorkspaceUiState,
+  WorkspaceState,
 } from "./types.js";
+import {
+  cloneWorkspaceState,
+  createDefaultWorkspace,
+  getWorkspaceFile,
+  insertCodeIntoWorkspaceFile,
+  serializeWorkspace,
+  updateWorkspaceFileContent,
+  updateWorkspaceFileLanguage,
+  updateWorkspaceView,
+} from "./workspace.js";
 
 type StoredRoom = {
   roomId: string;
-  code: string;
+  workspace: WorkspaceState;
+  ui: WorkspaceUiState;
   participants: Map<string, Participant>;
   aiBlocks: Map<string, AiBlock>;
+  snapshots: RoomSnapshot[];
+  terminalEntries: TerminalEntry[];
+};
+
+type RoomMutationResult = {
+  room: RoomState;
+  snapshot: RoomSnapshot | null;
+  changed: boolean;
 };
 
 type AiBlockMutationResult = {
@@ -17,6 +42,14 @@ type AiBlockMutationResult = {
   room: RoomState;
   changed: boolean;
   inserted: boolean;
+  snapshot: RoomSnapshot | null;
+};
+
+export type RestoreSnapshotResult = {
+  room: RoomState;
+  sourceSnapshot: RoomSnapshot;
+  createdSnapshot: RoomSnapshot | null;
+  changed: boolean;
 };
 
 export type LeaveRoomResult = {
@@ -36,14 +69,9 @@ export type JoinRoomResult = {
   deletedPreviousRoom: boolean;
 };
 
-const DEFAULT_CODE = `function startSession() {
-  return {
-    project: "iTECify",
-    mode: "hackathon-mvp",
-    collaboration: true,
-  };
-}
-`;
+const MAX_ROOM_SNAPSHOTS = 12;
+const MAX_TERMINAL_ENTRIES = 60;
+const AUTO_SNAPSHOT_INTERVAL_MS = 15_000;
 
 export class RoomStore {
   private rooms = new Map<string, StoredRoom>();
@@ -51,7 +79,6 @@ export class RoomStore {
 
   getRoom(roomId: string) {
     const room = this.rooms.get(roomId);
-
     return room ? this.toRoomState(room) : null;
   }
 
@@ -74,16 +101,152 @@ export class RoomStore {
     };
   }
 
-  updateCode(roomId: string, code: string) {
+  updateFileContent(
+    roomId: string,
+    fileId: string,
+    content: string,
+    options?: {
+      snapshotLabel?: string;
+      forceSnapshot?: boolean;
+    },
+  ): RoomMutationResult | null {
     const room = this.rooms.get(roomId);
 
     if (!room) {
       return null;
     }
 
-    room.code = code;
+    const result = updateWorkspaceFileContent(room.workspace, fileId, content);
 
-    return this.toRoomState(room);
+    if (!result.file) {
+      return null;
+    }
+
+    room.workspace = result.workspace;
+
+    const snapshot = result.changed
+      ? this.captureSnapshot(
+          room,
+          options?.snapshotLabel ?? "Auto checkpoint",
+          options?.forceSnapshot ?? false,
+        )
+      : null;
+
+    return {
+      room: this.toRoomState(room),
+      snapshot,
+      changed: result.changed,
+    };
+  }
+
+  updateWorkspaceView(
+    roomId: string,
+    activeFileId: string,
+    openFileIds: string[],
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = updateWorkspaceView(room.workspace, activeFileId, openFileIds);
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: result.changed,
+    };
+  }
+
+  updateFileLanguage(
+    roomId: string,
+    fileId: string,
+    language: WorkspaceFileLanguage,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = updateWorkspaceFileLanguage(room.workspace, fileId, language);
+
+    if (!result.file) {
+      return null;
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: result.changed,
+      file: result.file,
+    };
+  }
+
+  updateWorkspacePreview(
+    roomId: string,
+    preview: WorkspacePreviewState,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const normalizedTargetFileId =
+      preview.targetFileId && getWorkspaceFile(room.workspace, preview.targetFileId)
+        ? preview.targetFileId
+        : null;
+    const changed =
+      room.ui.preview.isVisible !== preview.isVisible ||
+      room.ui.preview.targetFileId !== normalizedTargetFileId;
+
+    if (!changed) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+      };
+    }
+
+    room.ui = {
+      ...room.ui,
+      preview: {
+        isVisible: preview.isVisible,
+        targetFileId: normalizedTargetFileId,
+      },
+    };
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+    };
+  }
+
+  updateWorkspaceTheme(roomId: string, theme: IdeThemeId) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    if (room.ui.theme === theme) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+      };
+    }
+
+    room.ui = {
+      ...room.ui,
+      theme,
+    };
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+    };
   }
 
   addAiBlock(roomId: string, block: AiBlock) {
@@ -96,6 +259,21 @@ export class RoomStore {
     room.aiBlocks.set(block.id, block);
 
     return block;
+  }
+
+  addTerminalEntry(roomId: string, entry: TerminalEntry) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    room.terminalEntries = [entry, ...room.terminalEntries].slice(
+      0,
+      MAX_TERMINAL_ENTRIES,
+    );
+
+    return entry;
   }
 
   acceptAiBlock(roomId: string, blockId: string): AiBlockMutationResult | null {
@@ -111,29 +289,28 @@ export class RoomStore {
       return null;
     }
 
-    if (existingBlock.status === "accepted") {
+    if (existingBlock.status !== "pending") {
       return {
         block: existingBlock,
         room: this.toRoomState(room),
         changed: false,
         inserted: false,
+        snapshot: null,
       };
     }
 
-    if (existingBlock.status === "rejected") {
-      return {
-        block: existingBlock,
-        room: this.toRoomState(room),
-        changed: false,
-        inserted: false,
-      };
-    }
-
-    room.code = insertCodeAfterLine(
-      room.code,
+    const insertionResult = insertCodeIntoWorkspaceFile(
+      room.workspace,
+      existingBlock.fileId,
       existingBlock.code,
       existingBlock.insertAfterLine,
     );
+
+    if (!insertionResult.file) {
+      return null;
+    }
+
+    room.workspace = insertionResult.workspace;
 
     const updatedBlock: AiBlock = {
       ...existingBlock,
@@ -141,12 +318,16 @@ export class RoomStore {
     };
 
     room.aiBlocks.set(blockId, updatedBlock);
+    const snapshot = insertionResult.changed
+      ? this.captureSnapshot(room, "AI patch accepted", true)
+      : null;
 
     return {
       block: updatedBlock,
       room: this.toRoomState(room),
       changed: true,
-      inserted: true,
+      inserted: insertionResult.changed,
+      snapshot,
     };
   }
 
@@ -169,6 +350,7 @@ export class RoomStore {
         room: this.toRoomState(room),
         changed: false,
         inserted: false,
+        snapshot: null,
       };
     }
 
@@ -184,6 +366,45 @@ export class RoomStore {
       room: this.toRoomState(room),
       changed: true,
       inserted: false,
+      snapshot: null,
+    };
+  }
+
+  restoreSnapshot(
+    roomId: string,
+    snapshotId: string,
+  ): RestoreSnapshotResult | null {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const sourceSnapshot = room.snapshots.find(
+      (snapshot) => snapshot.id === snapshotId,
+    );
+
+    if (!sourceSnapshot) {
+      return null;
+    }
+
+    const changed =
+      serializeWorkspace(room.workspace) !==
+      serializeWorkspace(sourceSnapshot.workspace);
+
+    if (changed) {
+      room.workspace = cloneWorkspaceState(sourceSnapshot.workspace);
+    }
+
+    const createdSnapshot = changed
+      ? this.captureSnapshot(room, `Restored ${sourceSnapshot.label}`, true)
+      : null;
+
+    return {
+      room: this.toRoomState(room),
+      sourceSnapshot,
+      createdSnapshot,
+      changed,
     };
   }
 
@@ -246,11 +467,21 @@ export class RoomStore {
 
     const room: StoredRoom = {
       roomId,
-      code: DEFAULT_CODE,
+      workspace: createDefaultWorkspace(),
+      ui: {
+        preview: {
+          isVisible: true,
+          targetFileId: "file-html-entry",
+        },
+        theme: "dark",
+      },
       participants: new Map(),
       aiBlocks: new Map(),
+      snapshots: [],
+      terminalEntries: [],
     };
 
+    this.captureSnapshot(room, "Initial workspace", true);
     this.rooms.set(roomId, room);
 
     return {
@@ -262,33 +493,62 @@ export class RoomStore {
   private toRoomState(room: StoredRoom): RoomState {
     return {
       roomId: room.roomId,
-      code: room.code,
+      workspace: cloneWorkspaceState(room.workspace),
+      ui: {
+        preview: { ...room.ui.preview },
+        theme: room.ui.theme,
+      },
       participants: Array.from(room.participants.values()),
       aiBlocks: Array.from(room.aiBlocks.values()).sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt),
       ),
+      snapshots: room.snapshots.map((snapshot) => ({
+        ...snapshot,
+        workspace: cloneWorkspaceState(snapshot.workspace),
+      })),
+      terminalEntries: [...room.terminalEntries].reverse(),
     };
   }
-}
 
-function insertCodeAfterLine(
-  documentCode: string,
-  blockCode: string,
-  insertAfterLine: number,
-) {
-  const normalizedDocument = documentCode.replace(/\r\n/g, "\n");
-  const normalizedBlock = blockCode.replace(/\r\n/g, "\n").trimEnd();
-  const documentLines =
-    normalizedDocument.length > 0 ? normalizedDocument.split("\n") : [];
-  const insertionIndex = Math.max(
-    0,
-    Math.min(insertAfterLine, documentLines.length),
-  );
-  const blockLines = normalizedBlock.split("\n");
+  private captureSnapshot(
+    room: StoredRoom,
+    label: string,
+    force: boolean,
+  ): RoomSnapshot | null {
+    const latestSnapshot = room.snapshots[0] ?? null;
+    const now = new Date();
 
-  return [
-    ...documentLines.slice(0, insertionIndex),
-    ...blockLines,
-    ...documentLines.slice(insertionIndex),
-  ].join("\n");
+    if (latestSnapshot) {
+      const matchesLatestState =
+        serializeWorkspace(latestSnapshot.workspace) ===
+        serializeWorkspace(room.workspace);
+
+      if (matchesLatestState && (!force || latestSnapshot.label === label)) {
+        return null;
+      }
+
+      if (!force) {
+        const lastCreatedAt = Date.parse(latestSnapshot.createdAt);
+
+        if (
+          Number.isFinite(lastCreatedAt) &&
+          now.getTime() - lastCreatedAt < AUTO_SNAPSHOT_INTERVAL_MS
+        ) {
+          return null;
+        }
+      }
+    }
+
+    const snapshot: RoomSnapshot = {
+      id: `snapshot_${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
+      roomId: room.roomId,
+      workspace: cloneWorkspaceState(room.workspace),
+      label,
+      createdAt: now.toISOString(),
+    };
+
+    room.snapshots = [snapshot, ...room.snapshots].slice(0, MAX_ROOM_SNAPSHOTS);
+
+    return snapshot;
+  }
 }

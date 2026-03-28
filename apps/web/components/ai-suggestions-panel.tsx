@@ -36,15 +36,34 @@ function actionButtonClasses(
   return "border-rose-400/12 bg-rose-400/8 text-rose-300 hover:border-rose-400/24 hover:bg-rose-400/12";
 }
 
+function formatExplanation(explanation: string) {
+  return explanation
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
 function EmptyState() {
   return (
-    <div className="rounded-2xl border border-[rgba(148,163,184,0.1)] bg-white/[0.03] p-4">
-      <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
-        No Suggestions Yet
+    <div className="border border-dashed border-[var(--line-strong)] bg-[var(--bg-panel-soft)] p-4">
+      <div className="flex items-center gap-2">
+        <span className="h-2 w-2 rounded-full bg-[var(--accent)]" />
+        <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
+          No Suggestions Yet
+        </p>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+        Ask AI to generate the first review block for this shared file. New
+        suggestions will appear here for everyone in the room.
       </p>
-      <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
-        Use Ask AI to create mocked code suggestion blocks for the current room.
-      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
+          Mocked for demo
+        </span>
+        <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
+          Shared with room
+        </span>
+      </div>
     </div>
   );
 }
@@ -56,25 +75,37 @@ export function AiSuggestionsPanel({
   onReject,
 }: AiSuggestionsPanelProps) {
   return (
-    <section className="flex min-h-0 flex-col rounded-[26px] border border-[var(--line)] bg-[var(--bg-panel)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.025),0_18px_44px_rgba(0,0,0,0.22)] lg:p-5">
-      <div className="mb-4 border-b border-[rgba(148,163,184,0.08)] pb-4">
-        <h2 className="text-[13px] font-semibold uppercase tracking-[0.24em] text-white/92">
+    <section className="flex h-full min-h-0 flex-col bg-[var(--sidebar-bg)] p-3">
+      <div className="mb-3 border-b border-[var(--line)] pb-3">
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)]">
           AI Suggestions
         </h2>
-        <p className="mt-2 max-w-sm text-sm leading-6 text-[var(--text-muted)]">
+        <p className="mt-2 max-w-sm text-[12px] leading-5 text-[var(--text-muted)]">
           Mocked AI blocks for review before any editor insertion happens.
         </p>
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
         {isLoading ? (
-          <div className="rounded-2xl border border-[rgba(82,199,184,0.14)] bg-[rgba(82,199,184,0.06)] p-4">
-            <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--accent)]">
-              AI Request In Progress
+          <div className="border border-[rgba(82,199,184,0.16)] bg-[var(--accent-soft)] p-4">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-[var(--accent)]" />
+              <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--accent)]">
+                AI Request In Progress
+              </p>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+              Reviewing the current editor snapshot and preparing a room-shared
+              suggestion block.
             </p>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
-              Preparing a mocked block suggestion for everyone in the room.
-            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <span className="border border-[var(--accent-line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--accent)]">
+                Reading code
+              </span>
+              <span className="border border-[var(--accent-line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--accent)]">
+                Drafting suggestion
+              </span>
+            </div>
           </div>
         ) : null}
 
@@ -86,18 +117,29 @@ export function AiSuggestionsPanel({
           return (
             <article
               key={block.id}
-              className="rounded-2xl border border-[rgba(148,163,184,0.1)] bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]"
+              className="border border-[var(--line)] bg-[var(--bg-panel)] p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-white">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)]">
+                      AI Generated
+                    </span>
+                    <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                      Review Block
+                    </span>
+                  </div>
+                  <h3 className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
                     Suggestion Block
                   </h3>
+                  <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                    Proposed change with reasoning first, code second.
+                  </p>
                 </div>
 
                 <div className="flex flex-col items-end gap-2">
                   <span
-                    className={`rounded-full border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.18em] ${statusClassesFor(
+                    className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${statusClassesFor(
                       block.status,
                     )}`}
                   >
@@ -113,18 +155,28 @@ export function AiSuggestionsPanel({
               </div>
 
               {block.explanation ? (
-                <div className="mt-4 rounded-2xl border border-[rgba(82,199,184,0.12)] bg-[rgba(82,199,184,0.05)] px-4 py-3">
-                  <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
-                    Why AI Suggests This
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                    {block.explanation}
-                  </p>
+                <div className="mt-4 border border-[rgba(82,199,184,0.12)] bg-[var(--accent-soft)] px-4 py-3.5">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-[var(--accent)]" />
+                    <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
+                      AI Reasoning
+                    </p>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {formatExplanation(block.explanation).map((sentence) => (
+                      <p
+                        key={sentence}
+                        className="text-sm leading-6 text-[var(--text-secondary)]"
+                      >
+                        {sentence}
+                      </p>
+                    ))}
+                  </div>
                 </div>
               ) : null}
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border border-[rgba(148,163,184,0.1)] bg-black/20 px-3 py-2">
+                <div className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2">
                   <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
                     Insert After Line
                   </p>
@@ -133,7 +185,7 @@ export function AiSuggestionsPanel({
                   </p>
                 </div>
 
-                <div className="rounded-xl border border-[rgba(148,163,184,0.1)] bg-black/20 px-3 py-2">
+                <div className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2">
                   <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
                     Room
                   </p>
@@ -143,11 +195,16 @@ export function AiSuggestionsPanel({
                 </div>
               </div>
 
-              <div className="mt-3 rounded-2xl border border-[rgba(148,163,184,0.1)] bg-[#0a1220] p-4">
-                <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                  Suggested Code
-                </p>
-                <pre className="mt-3 overflow-x-auto font-mono text-[13px] leading-6 text-slate-200">
+              <div className="mt-4 border border-[var(--line)] bg-[var(--editor-inline)] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    Suggested Code
+                  </p>
+                  <span className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                    Patch
+                  </span>
+                </div>
+                <pre className="mt-3 overflow-x-auto font-mono text-[13px] leading-6 text-[var(--terminal-text)]">
                   <code>{block.code}</code>
                 </pre>
               </div>
@@ -157,7 +214,7 @@ export function AiSuggestionsPanel({
                   type="button"
                   disabled={!isPending}
                   onClick={() => onAccept(block.id)}
-                  className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${actionButtonClasses(
+                  className={`border px-3 py-2 text-sm font-medium transition ${actionButtonClasses(
                     "accept",
                     !isPending,
                   )}`}
@@ -168,7 +225,7 @@ export function AiSuggestionsPanel({
                   type="button"
                   disabled={!isPending}
                   onClick={() => onReject(block.id)}
-                  className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${actionButtonClasses(
+                  className={`border px-3 py-2 text-sm font-medium transition ${actionButtonClasses(
                     "reject",
                     !isPending,
                   )}`}
