@@ -9,6 +9,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       ITECIFY_EXECUTION_TMP_ROOT: ${HOST_PROJECT_ROOT:?Set HOST_PROJECT_ROOT in the root .env to your absolute repo path}/.docker-data/executions
+      ITECIFY_TERMINAL_TMP_ROOT: ${HOST_PROJECT_ROOT:?Set HOST_PROJECT_ROOT in the root .env to your absolute repo path}/.docker-data/terminals
+      ITECIFY_TERMINAL_IMAGE: itecify-terminal-sandbox:local
     ports:
       - "4000:4000"
     volumes:

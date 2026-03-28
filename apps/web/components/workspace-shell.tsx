@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import {
   IDE_THEMES,
@@ -31,10 +31,13 @@ import {
   type WorkspaceState,
 } from "@/lib/socket";
 import {
+  buildWorkspacePreviewDocument,
   applyWorkspaceTreeUpdate,
   createFallbackWorkspace,
   getFileExecutionRoute,
   getFileIcon,
+  searchWorkspaceContents,
+  searchWorkspaceFiles,
   getWorkspaceFile,
   getWorkspaceFiles,
   getWorkspaceLanguageLabel,
@@ -43,6 +46,7 @@ import {
   updateWorkspaceFileLanguage,
 } from "@/lib/workspace";
 import {
+  buildSessionInviteUrl,
   formatSessionCodeForDisplay,
   uploadSessionProjectZip,
 } from "@/lib/session";
@@ -55,13 +59,23 @@ import { IdeSidePanel } from "./ide-side-panel";
 import { PrivateAiChatPanel } from "./private-ai-chat-panel";
 import { ParticipantsBar } from "./participants-bar";
 import { SharedChatPanel } from "./shared-chat-panel";
+import {
+  WorkspaceOmnibar,
+  type WorkspaceCommandPrompt,
+  type WorkspaceOmnibarCommandItem,
+  type WorkspaceOmnibarMode,
+} from "./workspace-omnibar";
 
 const DOCUMENT_SYNC_DELAY_MS = 120;
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type InspectorView = "preview" | "shared-chat" | "private-ai";
 type BottomPanelView = "terminal" | "output" | "timeline";
-
+type EditorRevealRequest = {
+  fileId: string;
+  lineNumber: number;
+  nonce: number;
+};
 type PendingFileUpdate = {
   fileId: string;
   content: string;
@@ -86,7 +100,17 @@ type TopBarProps = {
   roomId: string;
   isSigningOut: boolean;
   themeId: IdeThemeId;
+  shareFeedback: string | null;
   onThemeChange: (themeId: IdeThemeId) => void;
+  isExplorerVisible: boolean;
+  isBottomPanelVisible: boolean;
+  onToggleExplorer: () => void;
+  onToggleTerminal: () => void;
+  onOpenQuickOpen: () => void;
+  onOpenSearch: () => void;
+  onOpenCommandPalette: () => void;
+  onCopyInviteLink: () => void;
+  onCopySessionCode: () => void;
   onLogout: () => void;
 };
 
@@ -168,7 +192,17 @@ function TopBar({
   roomId,
   isSigningOut,
   themeId,
+  shareFeedback,
   onThemeChange,
+  isExplorerVisible,
+  isBottomPanelVisible,
+  onToggleExplorer,
+  onToggleTerminal,
+  onOpenQuickOpen,
+  onOpenSearch,
+  onOpenCommandPalette,
+  onCopyInviteLink,
+  onCopySessionCode,
   onLogout,
 }: TopBarProps) {
   const statusLabel =
@@ -232,6 +266,15 @@ function TopBar({
 
       <div className="space-y-1 border border-[var(--line)] bg-[var(--bg-panel)] p-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
+          <ActionButton onClick={onToggleExplorer}>
+            {isExplorerVisible ? "Hide Explorer" : "Show Explorer"}
+          </ActionButton>
+          <ActionButton onClick={onToggleTerminal}>
+            {isBottomPanelVisible ? "Hide Terminal" : "Show Terminal"}
+          </ActionButton>
+          <ActionButton onClick={onOpenQuickOpen}>Quick Open</ActionButton>
+          <ActionButton onClick={onOpenSearch}>Search</ActionButton>
+          <ActionButton onClick={onOpenCommandPalette}>Palette</ActionButton>
           <label className="inline-flex h-8 items-center gap-2 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 text-xs text-[var(--text-secondary)]">
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
               Theme
@@ -252,92 +295,19 @@ function TopBar({
               ))}
             </select>
           </label>
-          <ActionButton>Share</ActionButton>
-          <ActionButton>Invite</ActionButton>
+          <ActionButton onClick={onCopyInviteLink}>Share Link</ActionButton>
+          <ActionButton onClick={onCopySessionCode}>Copy Code</ActionButton>
           <ActionButton disabled={isSigningOut} onClick={onLogout}>
             {isSigningOut ? "Signing Out..." : "Log Out"}
           </ActionButton>
         </div>
+        {shareFeedback ? (
+          <p className="mt-2 text-right font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)]">
+            {shareFeedback}
+          </p>
+        ) : null}
       </div>
     </header>
-  );
-}
-
-function ActivityRail({
-  inspectorView,
-  bottomPanelView,
-  onSelectInspectorView,
-  onSelectBottomPanelView,
-}: {
-  inspectorView: InspectorView;
-  bottomPanelView: BottomPanelView;
-  onSelectInspectorView: (view: InspectorView) => void;
-  onSelectBottomPanelView: (view: BottomPanelView) => void;
-}) {
-  const buttons = [
-    { id: "files", label: "EX", title: "Explorer", active: true },
-    {
-      id: "preview",
-      label: "PR",
-      title: "Preview",
-      active: inspectorView === "preview",
-      onClick: () => onSelectInspectorView("preview"),
-    },
-    {
-      id: "chat",
-      label: "CH",
-      title: "Shared Chat",
-      active: inspectorView === "shared-chat",
-      onClick: () => onSelectInspectorView("shared-chat"),
-    },
-    {
-      id: "ai",
-      label: "AI",
-      title: "Private AI",
-      active: inspectorView === "private-ai",
-      onClick: () => onSelectInspectorView("private-ai"),
-    },
-    {
-      id: "terminal",
-      label: "TM",
-      title: "Terminal",
-      active: bottomPanelView === "terminal",
-      onClick: () => onSelectBottomPanelView("terminal"),
-    },
-    {
-      id: "output",
-      label: "OP",
-      title: "Output",
-      active: bottomPanelView === "output",
-      onClick: () => onSelectBottomPanelView("output"),
-    },
-    {
-      id: "timeline",
-      label: "TL",
-      title: "Timeline",
-      active: bottomPanelView === "timeline",
-      onClick: () => onSelectBottomPanelView("timeline"),
-    },
-  ];
-
-  return (
-    <aside className="flex min-h-0 flex-col items-center gap-1 border-r border-[var(--line)] bg-[var(--activitybar-bg)] px-1 py-2">
-      {buttons.map((button) => (
-        <button
-          key={button.id}
-          type="button"
-          title={button.title}
-          onClick={button.onClick}
-          className={`flex h-11 w-11 items-center justify-center border-l-2 font-mono text-[10px] uppercase tracking-[0.14em] transition ${
-            button.active
-              ? "border-l-[var(--accent)] bg-[var(--editor-tab-hover-bg)] text-[var(--text-primary)]"
-              : "border-l-transparent text-[var(--text-muted)] hover:bg-[var(--editor-tab-hover-bg)] hover:text-[var(--text-primary)]"
-          }`}
-        >
-          {button.label}
-        </button>
-      ))}
-    </aside>
   );
 }
 
@@ -357,6 +327,7 @@ type EditorPanelProps = {
   isPreviewFocused: boolean;
   presentationSnapshot: RoomSnapshot | null;
   isPresentationMode: boolean;
+  editorRevealRequest: EditorRevealRequest | null;
   onSelectTab: (fileId: string) => void;
   onCloseTab: (fileId: string) => void;
   onChange: (value: string) => void;
@@ -396,6 +367,7 @@ function EditorPanel({
   isPreviewFocused,
   presentationSnapshot,
   isPresentationMode,
+  editorRevealRequest,
   onSelectTab,
   onCloseTab,
   onChange,
@@ -623,6 +595,14 @@ function EditorPanel({
             readOnly={isReadOnly}
             language={toMonacoLanguage(activeFile.language)}
             value={activeFile.content}
+            revealRequest={
+              editorRevealRequest?.fileId === activeFile.id
+                ? {
+                    lineNumber: editorRevealRequest.lineNumber,
+                    nonce: editorRevealRequest.nonce,
+                  }
+                : null
+            }
             onChange={onChange}
             onCursorChange={onCursorChange}
             remoteCursors={isReadOnly ? [] : remoteCursors}
@@ -737,6 +717,24 @@ function normalizeEditorViewState(
   };
 }
 
+function isNativeTextInputTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (
+    target.closest(".monaco-editor") ||
+    target.closest(".xterm") ||
+    target.classList.contains("xterm-helper-textarea")
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    target.closest("input, textarea, select, [contenteditable='true']"),
+  );
+}
+
 type WorkspaceShellProps = {
   roomId: string;
   currentUserName: string;
@@ -770,6 +768,7 @@ export function WorkspaceShell({
   const [isRunningCode, setIsRunningCode] = useState(false);
   const [consoleStatus, setConsoleStatus] = useState<RunCodeStatus>("idle");
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
   const [consoleEntries, setConsoleEntries] = useState<ConsoleEntry[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
   const [currentSocketId, setCurrentSocketId] = useState<string | null>(null);
@@ -779,6 +778,15 @@ export function WorkspaceShell({
     useState<InspectorView>("preview");
   const [bottomPanelView, setBottomPanelView] =
     useState<BottomPanelView>("terminal");
+  const [isExplorerVisible, setIsExplorerVisible] = useState(true);
+  const [isBottomPanelVisible, setIsBottomPanelVisible] = useState(true);
+  const [omnibarMode, setOmnibarMode] =
+    useState<WorkspaceOmnibarMode>("quick-open");
+  const [isOmnibarOpen, setIsOmnibarOpen] = useState(false);
+  const [omnibarQuery, setOmnibarQuery] = useState("");
+  const [commandPrompt, setCommandPrompt] = useState<WorkspaceCommandPrompt | null>(
+    null,
+  );
   const [ideThemeId, setIdeThemeId] = useState<IdeThemeId>(() =>
     getStoredIdeTheme(),
   );
@@ -792,10 +800,16 @@ export function WorkspaceShell({
   const [editorView, setEditorView] = useState<EditorViewState>(() =>
     normalizeEditorViewState(createFallbackWorkspace(), null),
   );
+  const [editorRevealRequest, setEditorRevealRequest] =
+    useState<EditorRevealRequest | null>(null);
   const socketRef = useRef<ItecifySocket | null>(null);
   const projectZipInputRef = useRef<HTMLInputElement | null>(null);
+  const shareFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workspaceRef = useRef<WorkspaceState>(createFallbackWorkspace());
+  const roomIdRef = useRef(roomId);
   const isRunningCodeRef = useRef(false);
+  const flushPendingFileUpdateRef = useRef<() => void>(() => {});
+  const showShareFeedbackRef = useRef<(message: string) => void>(() => {});
   const pendingFileUpdateRef = useRef<PendingFileUpdate | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const applyingRemoteFileIdRef = useRef<string | null>(null);
@@ -854,6 +868,177 @@ export function WorkspaceShell({
       "json",
       "markdown",
     ].includes(liveActiveFile.language);
+  const canFormatFileRef = useRef(canFormatFile);
+  const liveActiveFileRef = useRef<WorkspaceFileNode | null>(liveActiveFile);
+  const editorViewRef = useRef<EditorViewState>(editorView);
+  const bottomPanelViewRef = useRef<BottomPanelView>(bottomPanelView);
+  const previewDocument = useMemo(
+    () => buildWorkspacePreviewDocument(workspace),
+    [workspace],
+  );
+  const quickOpenItems = useMemo(() => {
+    const searchResults = searchWorkspaceFiles(workspace, omnibarQuery);
+    const openFileSet = new Set(editorView.openFileIds);
+
+    return searchResults
+      .sort((left, right) => {
+        if (left.fileId === editorView.activeFileId) {
+          return -1;
+        }
+
+        if (right.fileId === editorView.activeFileId) {
+          return 1;
+        }
+
+        const leftIsOpen = openFileSet.has(left.fileId);
+        const rightIsOpen = openFileSet.has(right.fileId);
+
+        if (leftIsOpen !== rightIsOpen) {
+          return leftIsOpen ? -1 : 1;
+        }
+
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+
+        return left.path.localeCompare(right.path);
+      })
+      .slice(0, 24)
+      .map((result) => ({
+        id: result.id,
+        fileId: result.fileId,
+        title: result.name,
+        subtitle: result.path,
+        icon: result.icon,
+        badge:
+          result.fileId === editorView.activeFileId
+            ? "Active"
+            : openFileSet.has(result.fileId)
+              ? "Open"
+              : undefined,
+      }));
+  }, [editorView.activeFileId, editorView.openFileIds, omnibarQuery, workspace]);
+  const fileSearchItems = useMemo(
+    () =>
+      searchWorkspaceFiles(workspace, omnibarQuery)
+        .slice(0, 20)
+        .map((result) => ({
+          id: result.id,
+          fileId: result.fileId,
+          title: result.name,
+          subtitle: result.path,
+          icon: result.icon,
+        })),
+    [omnibarQuery, workspace],
+  );
+  const contentSearchItems = useMemo(
+    () =>
+      searchWorkspaceContents(workspace, omnibarQuery).map((result) => ({
+        id: result.id,
+        fileId: result.fileId,
+        title: result.name,
+        subtitle: result.path,
+        icon: result.icon,
+        lineNumber: result.lineNumber,
+        lineText: result.lineText,
+      })),
+    [omnibarQuery, workspace],
+  );
+  const commandItems = useMemo<WorkspaceOmnibarCommandItem[]>(
+    () => {
+      const normalizedQuery = omnibarQuery.trim().toLowerCase();
+      const allItems: WorkspaceOmnibarCommandItem[] = [
+        {
+          id: "create-file",
+          title: "Create File",
+          subtitle: "Create a new file beside the active file or at the workspace root.",
+          icon: "FILE",
+        },
+        {
+          id: "create-folder",
+          title: "Create Folder",
+          subtitle: "Create a new folder beside the active file or at the workspace root.",
+          icon: "DIR",
+        },
+        {
+          id: "rename-active",
+          title: "Rename Active File",
+          subtitle: liveActiveFile
+            ? `Rename ${liveActiveFile.name}.`
+            : "Open a file before renaming it.",
+          icon: "REN",
+          disabled: !liveActiveFile,
+        },
+        {
+          id: "format-active",
+          title: "Format Active File",
+          subtitle: canFormatFile
+            ? "Run the shared formatter for the current file."
+            : "Formatting is only available for JS, TS, HTML, CSS, JSON, and Markdown.",
+          icon: "FMT",
+          shortcut: "Shift + Alt + F",
+          disabled: !canFormatFile,
+        },
+        {
+          id: "run-active",
+          title: "Run Active File",
+          subtitle: liveActiveFile
+            ? `Run ${liveActiveFile.name} with the language-aware IDE runner.`
+            : "Open a runnable file before using Run.",
+          icon: "RUN",
+          disabled: !canRunCode,
+        },
+        {
+          id: "open-preview",
+          title: "Open Live Preview",
+          subtitle: previewDocument
+            ? "Focus the right-side live preview panel."
+            : "Add index.html to enable live preview.",
+          icon: "PRV",
+          disabled: !previewDocument,
+        },
+        {
+          id: "toggle-explorer",
+          title: isExplorerVisible ? "Hide Explorer" : "Show Explorer",
+          subtitle: "Toggle the left workspace explorer.",
+          icon: "EXP",
+          shortcut: "Ctrl/Cmd + B",
+        },
+        {
+          id: "toggle-terminal",
+          title: isBottomPanelVisible ? "Hide Terminal Panel" : "Show Terminal Panel",
+          subtitle: "Toggle the bottom integrated terminal area.",
+          icon: "TRM",
+          shortcut: "Ctrl/Cmd + J",
+        },
+        ...IDE_THEMES.map((theme) => ({
+          id: `theme:${theme.id}`,
+          title: `Change Theme: ${theme.label}`,
+          subtitle: "Switch Monaco and the IDE shell together.",
+          icon: "THM",
+          badge: theme.id === ideThemeId ? "Active" : undefined,
+        })),
+      ];
+
+      if (!normalizedQuery) {
+        return allItems;
+      }
+
+      return allItems.filter((item) =>
+        `${item.title} ${item.subtitle}`.toLowerCase().includes(normalizedQuery),
+      );
+    },
+    [
+      canFormatFile,
+      canRunCode,
+      ideThemeId,
+      isBottomPanelVisible,
+      isExplorerVisible,
+      liveActiveFile,
+      omnibarQuery,
+      previewDocument,
+    ],
+  );
   const presentationSnapshotIndex = presentationSnapshot
     ? snapshots.findIndex((snapshot) => snapshot.id === presentationSnapshot.id)
     : -1;
@@ -861,6 +1046,26 @@ export function WorkspaceShell({
   useEffect(() => {
     isRunningCodeRef.current = isRunningCode;
   }, [isRunningCode]);
+
+  useEffect(() => {
+    roomIdRef.current = roomId;
+  }, [roomId]);
+
+  useEffect(() => {
+    canFormatFileRef.current = canFormatFile;
+  }, [canFormatFile]);
+
+  useEffect(() => {
+    liveActiveFileRef.current = liveActiveFile;
+  }, [liveActiveFile]);
+
+  useEffect(() => {
+    editorViewRef.current = editorView;
+  }, [editorView]);
+
+  useEffect(() => {
+    bottomPanelViewRef.current = bottomPanelView;
+  }, [bottomPanelView]);
 
   useEffect(() => {
     persistIdeTheme(ideThemeId);
@@ -900,12 +1105,33 @@ export function WorkspaceShell({
     setIsPresentationMode(false);
     setInspectorView("preview");
     setBottomPanelView("terminal");
+    setIsExplorerVisible(true);
+    setIsBottomPanelVisible(true);
+    setOmnibarMode("quick-open");
+    setIsOmnibarOpen(false);
+    setOmnibarQuery("");
+    setCommandPrompt(null);
     setProjectImportState({
       isImporting: false,
       progress: null,
       message: null,
     });
+    setShareFeedback(null);
+    setEditorRevealRequest(null);
+
+    if (shareFeedbackTimerRef.current) {
+      clearTimeout(shareFeedbackTimerRef.current);
+      shareFeedbackTimerRef.current = null;
+    }
   }, [currentUserId, roomId]);
+
+  useEffect(() => {
+    return () => {
+      if (shareFeedbackTimerRef.current) {
+        clearTimeout(shareFeedbackTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setIsEmptyWorkspacePromptDismissed(false);
@@ -963,6 +1189,173 @@ export function WorkspaceShell({
     syncTimerRef.current = null;
   }
 
+  function showShareFeedback(message: string) {
+    setShareFeedback(message);
+
+    if (shareFeedbackTimerRef.current) {
+      clearTimeout(shareFeedbackTimerRef.current);
+    }
+
+    shareFeedbackTimerRef.current = setTimeout(() => {
+      setShareFeedback(null);
+      shareFeedbackTimerRef.current = null;
+    }, 2200);
+  }
+
+  function openOmnibar(mode: WorkspaceOmnibarMode) {
+    setOmnibarMode(mode);
+    setOmnibarQuery("");
+    setCommandPrompt(null);
+    setIsOmnibarOpen(true);
+  }
+
+  function closeOmnibar() {
+    setIsOmnibarOpen(false);
+    setOmnibarQuery("");
+    setCommandPrompt(null);
+  }
+
+  function openPreviewInspector() {
+    setInspectorView("preview");
+    emitWorkspacePreviewUpdate(
+      true,
+      inspectorActiveFile?.id ?? liveActiveFile?.id ?? null,
+    );
+  }
+
+  function handleToggleExplorer() {
+    setIsExplorerVisible((currentState) => !currentState);
+  }
+
+  function handleSelectBottomPanelView(nextView: BottomPanelView) {
+    setBottomPanelView(nextView);
+    setIsBottomPanelVisible(true);
+  }
+
+  function handleToggleBottomPanel(nextView: BottomPanelView = "terminal") {
+    setBottomPanelView(nextView);
+    setIsBottomPanelVisible(
+      (currentState) => !(currentState && bottomPanelView === nextView),
+    );
+  }
+
+  function handleOpenFileFromOmnibar(fileId: string, lineNumber?: number) {
+    if (lineNumber) {
+      setEditorRevealRequest({
+        fileId,
+        lineNumber,
+        nonce: Date.now(),
+      });
+    }
+
+    handleSelectFile(fileId);
+    closeOmnibar();
+  }
+
+  function handleSelectCommand(commandId: string) {
+    if (commandId === "create-file") {
+      setCommandPrompt({
+        commandId,
+        title: "Create File",
+        description:
+          "Create a new file beside the active file, or at the workspace root if no file is active.",
+        label: "File name",
+        placeholder: "untitled.js",
+        defaultValue: "untitled.js",
+        submitLabel: "Create File",
+      });
+      return;
+    }
+
+    if (commandId === "create-folder") {
+      setCommandPrompt({
+        commandId,
+        title: "Create Folder",
+        description:
+          "Create a new folder beside the active file, or at the workspace root if no file is active.",
+        label: "Folder name",
+        placeholder: "new-folder",
+        defaultValue: "new-folder",
+        submitLabel: "Create Folder",
+      });
+      return;
+    }
+
+    if (commandId === "rename-active" && liveActiveFile) {
+      setCommandPrompt({
+        commandId,
+        title: "Rename Active File",
+        description:
+          "Rename the current file. You can change the extension too, and the editor language will follow.",
+        label: "New file name",
+        placeholder: liveActiveFile.name,
+        defaultValue: liveActiveFile.name,
+        submitLabel: "Rename File",
+      });
+      return;
+    }
+
+    if (commandId === "format-active") {
+      handleFormatActiveFile();
+      closeOmnibar();
+      return;
+    }
+
+    if (commandId === "run-active") {
+      void handleRunCode();
+      closeOmnibar();
+      return;
+    }
+
+    if (commandId === "open-preview") {
+      openPreviewInspector();
+      closeOmnibar();
+      return;
+    }
+
+    if (commandId === "toggle-explorer") {
+      handleToggleExplorer();
+      closeOmnibar();
+      return;
+    }
+
+    if (commandId === "toggle-terminal") {
+      handleToggleBottomPanel("terminal");
+      closeOmnibar();
+      return;
+    }
+
+    if (commandId.startsWith("theme:")) {
+      handleThemeChange(commandId.replace("theme:", "") as IdeThemeId);
+      closeOmnibar();
+    }
+  }
+
+  function handleSubmitCommandPrompt(value: string) {
+    const trimmedValue = value.trim();
+
+    if (!commandPrompt || !trimmedValue) {
+      return;
+    }
+
+    if (commandPrompt.commandId === "create-file") {
+      handleCreateFile(liveActiveFile?.parentId ?? null, trimmedValue);
+      closeOmnibar();
+      return;
+    }
+
+    if (commandPrompt.commandId === "create-folder") {
+      handleCreateFolder(liveActiveFile?.parentId ?? null, trimmedValue);
+      closeOmnibar();
+      return;
+    }
+
+    if (commandPrompt.commandId === "rename-active" && liveActiveFile) {
+      handleRename(liveActiveFile.id, trimmedValue);
+      closeOmnibar();
+    }
+  }
+
   function flushPendingFileUpdate() {
     clearScheduledSync();
 
@@ -980,6 +1373,9 @@ export function WorkspaceShell({
       content: pendingFileUpdate.content,
     });
   }
+
+  flushPendingFileUpdateRef.current = flushPendingFileUpdate;
+  showShareFeedbackRef.current = showShareFeedback;
 
   function scheduleFileSync() {
     if (syncTimerRef.current) {
@@ -1445,6 +1841,133 @@ export function WorkspaceShell({
     });
   }, [currentUserId, currentUserName, roomId]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (isNativeTextInputTarget(event.target)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const isPrimaryModifier = event.metaKey || event.ctrlKey;
+
+      if (isPrimaryModifier && event.shiftKey && key === "p") {
+        event.preventDefault();
+        setOmnibarMode("command");
+        setOmnibarQuery("");
+        setCommandPrompt(null);
+        setIsOmnibarOpen(true);
+        return;
+      }
+
+      if (isPrimaryModifier && key === "p") {
+        event.preventDefault();
+        setOmnibarMode("quick-open");
+        setOmnibarQuery("");
+        setCommandPrompt(null);
+        setIsOmnibarOpen(true);
+        return;
+      }
+
+      if (event.shiftKey && event.altKey && key === "f") {
+        const activeFile = liveActiveFileRef.current;
+
+        if (!activeFile || !canFormatFileRef.current || !socketRef.current?.connected) {
+          return;
+        }
+
+        event.preventDefault();
+        flushPendingFileUpdateRef.current();
+        socketRef.current.emit("workspace:file:format", {
+          roomId: roomIdRef.current,
+          fileId: activeFile.id,
+        });
+        return;
+      }
+
+      if (isPrimaryModifier && key === "s") {
+        event.preventDefault();
+        if (!liveActiveFileRef.current) {
+          showShareFeedbackRef.current("No active file");
+          return;
+        }
+
+        flushPendingFileUpdateRef.current();
+        showShareFeedbackRef.current("Workspace synced");
+        return;
+      }
+
+      if (isPrimaryModifier && key === "b") {
+        event.preventDefault();
+        setIsExplorerVisible((currentState) => !currentState);
+        return;
+      }
+
+      if (isPrimaryModifier && key === "j") {
+        event.preventDefault();
+        setBottomPanelView("terminal");
+        setIsBottomPanelVisible(
+          (currentState) =>
+            !(currentState && bottomPanelViewRef.current === "terminal"),
+        );
+        return;
+      }
+
+      if (isPrimaryModifier && key === "w") {
+        const activeFile = liveActiveFileRef.current;
+        const currentEditorView = editorViewRef.current;
+
+        if (!activeFile) {
+          return;
+        }
+
+        event.preventDefault();
+        flushPendingFileUpdateRef.current();
+
+        const closedTabIndex = currentEditorView.openFileIds.indexOf(activeFile.id);
+
+        if (closedTabIndex < 0) {
+          return;
+        }
+
+        const nextOpenFileIds = currentEditorView.openFileIds.filter(
+          (openFileId) => openFileId !== activeFile.id,
+        );
+        const nextActiveFileId =
+          currentEditorView.activeFileId === activeFile.id
+            ? nextOpenFileIds[closedTabIndex] ??
+              nextOpenFileIds[closedTabIndex - 1] ??
+              ""
+            : currentEditorView.activeFileId;
+        const nextView = normalizeEditorViewState(
+          workspaceRef.current,
+          currentEditorView,
+          {
+            activeFileId: nextActiveFileId,
+            openFileIds: nextOpenFileIds,
+          },
+        );
+
+        editorViewRef.current = nextView;
+        setEditorView(nextView);
+
+        if (!socketRef.current?.connected) {
+          return;
+        }
+
+        socketRef.current.emit("workspace:tab:close", {
+          roomId: roomIdRef.current,
+          fileId: activeFile.id,
+        });
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown, { capture: true });
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, { capture: true });
+    };
+  }, []);
+
   function handleEditorChange(nextValue: string) {
     if (!liveActiveFile) {
       return;
@@ -1536,16 +2059,13 @@ export function WorkspaceShell({
   }
 
   function handleTogglePreview() {
-    const nextInspectorView =
-      inspectorView === "preview" ? "private-ai" : "preview";
+    if (inspectorView === "preview") {
+      setInspectorView("private-ai");
+      emitWorkspacePreviewUpdate(false, null);
+      return;
+    }
 
-    setInspectorView(nextInspectorView);
-    emitWorkspacePreviewUpdate(
-      nextInspectorView === "preview",
-      nextInspectorView === "preview"
-        ? inspectorActiveFile?.id ?? liveActiveFile?.id ?? null
-        : null,
-    );
+    openPreviewInspector();
   }
 
   function handleThemeChange(nextThemeId: IdeThemeId) {
@@ -1586,19 +2106,23 @@ export function WorkspaceShell({
       return;
     }
 
+    flushPendingFileUpdate();
+
+    if (liveActiveFileCanPreview) {
+      openPreviewInspector();
+      return;
+    }
+
     if (!socketRef.current?.connected) {
       return;
     }
 
-    flushPendingFileUpdate();
+    setIsBottomPanelVisible(true);
     setBottomPanelView("terminal");
-
-    if (!liveActiveFileCanPreview) {
-      activeRunIdRef.current = null;
-      setConsoleEntries([]);
-      setConsoleStatus("running");
-      setIsRunningCode(true);
-    }
+    activeRunIdRef.current = null;
+    setConsoleEntries([]);
+    setConsoleStatus("running");
+    setIsRunningCode(true);
 
     socketRef.current.emit("code:run", {
       roomId,
@@ -1701,6 +2225,7 @@ export function WorkspaceShell({
   }
 
   function handlePreviewSnapshot(snapshotId: string) {
+    setIsBottomPanelVisible(true);
     setBottomPanelView("timeline");
     setPreviewSnapshotId(snapshotId);
   }
@@ -1760,6 +2285,17 @@ export function WorkspaceShell({
     });
   }, [roomId]);
 
+  const handleTerminalCommand = useCallback((command: string) => {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("terminal:command", {
+      roomId,
+      command,
+    });
+  }, [roomId]);
+
   const handleTerminalResize = useCallback((cols: number, rows: number) => {
     if (!socketRef.current?.connected) {
       return;
@@ -1780,6 +2316,26 @@ export function WorkspaceShell({
     socketRef.current.emit("terminal:clear", {
       roomId,
     });
+  }
+
+  async function handleCopyInviteLink() {
+    try {
+      await navigator.clipboard.writeText(
+        buildSessionInviteUrl(roomId, window.location.origin),
+      );
+      showShareFeedback("Invite link copied");
+    } catch {
+      showShareFeedback("Unable to copy link");
+    }
+  }
+
+  async function handleCopySessionCode() {
+    try {
+      await navigator.clipboard.writeText(formatSessionCodeForDisplay(roomId));
+      showShareFeedback("Session code copied");
+    } catch {
+      showShareFeedback("Unable to copy code");
+    }
   }
 
   function handleSelectFile(fileId: string) {
@@ -2011,7 +2567,17 @@ export function WorkspaceShell({
           roomId={roomId}
           isSigningOut={isSigningOut}
           themeId={ideThemeId}
+          shareFeedback={shareFeedback}
           onThemeChange={handleThemeChange}
+          isExplorerVisible={isExplorerVisible}
+          isBottomPanelVisible={isBottomPanelVisible}
+          onToggleExplorer={handleToggleExplorer}
+          onToggleTerminal={() => handleToggleBottomPanel("terminal")}
+          onOpenQuickOpen={() => openOmnibar("quick-open")}
+          onOpenSearch={() => openOmnibar("search")}
+          onOpenCommandPalette={() => openOmnibar("command")}
+          onCopyInviteLink={handleCopyInviteLink}
+          onCopySessionCode={handleCopySessionCode}
           onLogout={handleLogout}
         />
         <ParticipantsBar
@@ -2020,17 +2586,22 @@ export function WorkspaceShell({
           currentUserSocketId={currentSocketId}
         />
 
-        <div className="grid min-h-0 flex-1 grid-cols-[48px_minmax(220px,18vw)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(220px,32vh)] overflow-hidden">
-          <div className="row-span-2">
-            <ActivityRail
-              inspectorView={inspectorView}
-              bottomPanelView={bottomPanelView}
-              onSelectInspectorView={setInspectorView}
-              onSelectBottomPanelView={setBottomPanelView}
-            />
-          </div>
-
-          <div className="min-h-0 overflow-hidden border-r border-[var(--line)]">
+        <div
+          className="grid min-h-0 flex-1 overflow-hidden"
+          style={{
+            gridTemplateColumns: isExplorerVisible
+              ? "minmax(220px,18vw) minmax(0,1fr)"
+              : "0px minmax(0,1fr)",
+            gridTemplateRows: isBottomPanelVisible
+              ? "minmax(0,1fr) minmax(220px,32vh)"
+              : "minmax(0,1fr) 0px",
+          }}
+        >
+          <div
+            className={`min-h-0 overflow-hidden border-r border-[var(--line)] transition ${
+              isExplorerVisible ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          >
             <IdeFileExplorer
               roomId={roomId}
               workspace={workspace}
@@ -2070,6 +2641,7 @@ export function WorkspaceShell({
               isPreviewFocused={inspectorView === "preview"}
               presentationSnapshot={presentationSnapshot}
               isPresentationMode={isPresentationMode}
+              editorRevealRequest={editorRevealRequest}
               onSelectTab={handleSelectFile}
               onCloseTab={handleCloseTab}
               onChange={handleEditorChange}
@@ -2154,16 +2726,24 @@ export function WorkspaceShell({
             </div>
           </div>
 
-          <div className="min-h-0 overflow-hidden border-t border-[var(--line)] lg:col-[2/4]">
+          <div
+            className={`min-h-0 overflow-hidden border-t border-[var(--line)] lg:col-[1/3] ${
+              isBottomPanelVisible ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          >
             <IdeBottomPanel
               activeTab={bottomPanelView}
-              onSelectTab={setBottomPanelView}
+              onSelectTab={handleSelectBottomPanelView}
               roomId={roomId}
               terminalEntries={terminalEntries}
               canInteractTerminal={connectionStatus === "connected"}
               onInputTerminal={handleTerminalInput}
               onResizeTerminal={handleTerminalResize}
               onClearTerminal={handleClearTerminal}
+              onTerminalCommand={handleTerminalCommand}
+              onRunActiveFileFromTerminal={handleRunCode}
+              canRunActiveFileFromTerminal={canRunCode}
+              activeFileLabel={liveActiveFile?.name ?? null}
               consoleEntries={consoleEntries}
               consoleStatus={consoleStatus}
               snapshots={snapshots}
@@ -2178,6 +2758,31 @@ export function WorkspaceShell({
           </div>
         </div>
       </div>
+
+      <WorkspaceOmnibar
+        isOpen={isOmnibarOpen}
+        mode={omnibarMode}
+        query={omnibarQuery}
+        quickOpenItems={quickOpenItems}
+        fileSearchItems={fileSearchItems}
+        contentSearchItems={contentSearchItems}
+        commandItems={commandItems}
+        commandPrompt={commandPrompt}
+        onClose={closeOmnibar}
+        onModeChange={(nextMode) => {
+          setOmnibarMode(nextMode);
+          setCommandPrompt(null);
+          setOmnibarQuery("");
+        }}
+        onQueryChange={setOmnibarQuery}
+        onSelectQuickOpen={(fileId) => handleOpenFileFromOmnibar(fileId)}
+        onSelectSearch={(fileId, lineNumber) =>
+          handleOpenFileFromOmnibar(fileId, lineNumber)
+        }
+        onSelectCommand={handleSelectCommand}
+        onSubmitCommandPrompt={handleSubmitCommandPrompt}
+        onCancelCommandPrompt={() => setCommandPrompt(null)}
+      />
     </main>
   );
 }

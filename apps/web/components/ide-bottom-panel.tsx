@@ -17,6 +17,10 @@ type IdeBottomPanelProps = {
   onInputTerminal: (data: string) => void;
   onResizeTerminal: (cols: number, rows: number) => void;
   onClearTerminal: () => void;
+  onTerminalCommand: (command: string) => void;
+  onRunActiveFileFromTerminal: () => void;
+  canRunActiveFileFromTerminal: boolean;
+  activeFileLabel?: string | null;
   consoleEntries: ConsoleEntry[];
   consoleStatus: RunCodeStatus;
   snapshots: RoomSnapshot[];
@@ -44,6 +48,10 @@ export function IdeBottomPanel({
   onInputTerminal,
   onResizeTerminal,
   onClearTerminal,
+  onTerminalCommand,
+  onRunActiveFileFromTerminal,
+  canRunActiveFileFromTerminal,
+  activeFileLabel,
   consoleEntries,
   consoleStatus,
   snapshots,
@@ -101,6 +109,10 @@ export function IdeBottomPanel({
             onInput={onInputTerminal}
             onResize={onResizeTerminal}
             onClear={onClearTerminal}
+            onCommand={onTerminalCommand}
+            onRunActiveFile={onRunActiveFileFromTerminal}
+            canRunActiveFile={canRunActiveFileFromTerminal}
+            activeFileLabel={activeFileLabel}
           />
         ) : null}
 

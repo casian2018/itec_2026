@@ -19,7 +19,7 @@ import {
   cloneWorkspaceState,
   closeWorkspaceTab,
   createEmptyWorkspace,
-  duplicateWorkspaceFile,
+  duplicateWorkspaceNode,
   formatWorkspaceFile,
   createWorkspaceFile,
   createWorkspaceFolder,
@@ -46,6 +46,7 @@ type StoredRoom = {
   sharedChatMessages: ChatMessage[];
   privateChatMessages: Map<string, ChatMessage[]>;
   privateAiProposals: Map<string, AiEditProposal[]>;
+  emptySince: string | null;
 };
 
 type RoomMutationResult = {
@@ -83,6 +84,7 @@ export type LeaveRoomResult = {
   room: RoomState | null;
   participant: Participant | null;
   deletedRoom: boolean;
+  roomBecameEmpty: boolean;
 };
 
 export type JoinRoomResult = {
@@ -93,6 +95,7 @@ export type JoinRoomResult = {
   previousRoom: RoomState | null;
   previousParticipant: Participant | null;
   deletedPreviousRoom: boolean;
+  previousRoomBecameEmpty: boolean;
 };
 
 const MAX_ROOM_SNAPSHOTS = 12;
@@ -140,6 +143,7 @@ export class RoomStore {
     const { room, createdRoom } = this.ensureRoom(roomId);
     const participant = { socketId, name, userId };
 
+    room.emptySince = null;
     room.participants.set(socketId, participant);
     this.socketToRoom.set(socketId, roomId);
 
@@ -151,7 +155,19 @@ export class RoomStore {
       previousRoom: previousMembership.room,
       previousParticipant: previousMembership.participant,
       deletedPreviousRoom: previousMembership.deletedRoom,
+      previousRoomBecameEmpty: previousMembership.roomBecameEmpty,
     };
+  }
+
+  deleteRoomIfEmpty(roomId: string) {
+    const room = this.rooms.get(roomId);
+
+    if (!room || room.participants.size > 0) {
+      return false;
+    }
+
+    this.rooms.delete(roomId);
+    return true;
   }
 
   updateFileContent(
@@ -424,9 +440,9 @@ export class RoomStore {
       return null;
     }
 
-    const result = duplicateWorkspaceFile(room.workspace, nodeId);
+    const result = duplicateWorkspaceNode(room.workspace, nodeId);
 
-    if (!result.changed || !result.file) {
+    if (!result.changed || !result.node) {
       return {
         room: this.toRoomState(room),
         changed: false,
@@ -439,7 +455,7 @@ export class RoomStore {
     return {
       room: this.toRoomState(room),
       changed: true,
-      file: result.file,
+      file: result.node?.kind === "file" ? result.node : null,
     };
   }
 
@@ -990,6 +1006,7 @@ export class RoomStore {
         room: null,
         participant: null,
         deletedRoom: false,
+        roomBecameEmpty: false,
       };
     }
 
@@ -1003,6 +1020,7 @@ export class RoomStore {
         room: null,
         participant: null,
         deletedRoom: false,
+        roomBecameEmpty: false,
       };
     }
 
@@ -1010,13 +1028,13 @@ export class RoomStore {
     room.participants.delete(socketId);
 
     if (room.participants.size === 0) {
-      this.rooms.delete(roomId);
-
+      room.emptySince = new Date().toISOString();
       return {
         roomId,
-        room: null,
+        room: this.toRoomState(room),
         participant,
-        deletedRoom: true,
+        deletedRoom: false,
+        roomBecameEmpty: true,
       };
     }
 
@@ -1025,6 +1043,7 @@ export class RoomStore {
       room: this.toRoomState(room),
       participant,
       deletedRoom: false,
+      roomBecameEmpty: false,
     };
   }
 
@@ -1055,6 +1074,7 @@ export class RoomStore {
       sharedChatMessages: [],
       privateChatMessages: new Map(),
       privateAiProposals: new Map(),
+      emptySince: null,
     };
     this.rooms.set(roomId, room);
 

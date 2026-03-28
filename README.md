@@ -8,13 +8,13 @@ It currently includes:
 - VS Code-inspired IDE layout
 - shared file tree, tabs, active file, and multi-cursor editor
 - AI suggestion blocks with accept/reject flow
-- shared integrated PTY terminal per session
+- shared integrated terminal sandbox per session
 - Docker-backed code execution for JavaScript, Python, C, and C++
 - live preview for HTML/CSS/JS workspaces
 - ZIP project import
 - snapshots and lightweight presentation/replay mode
 - room-isolated state for participants, files, terminal, preview, and execution
-- a Docker-backed shared terminal toolchain with Node.js, npm, pnpm, yarn, Python, pip, gcc, g++, git, curl, ripgrep, jq, zip/unzip, and common CLI utilities
+- a Docker-isolated shared terminal toolchain with Node.js, npm, pnpm, yarn, Python, pip, gcc, g++, git, curl, ripgrep, jq, zip/unzip, and common CLI utilities
 
 ## Stack
 
@@ -79,7 +79,8 @@ Important:
 - the backend itself launches Docker containers for code execution
 - because of that, the server container mounts the host Docker socket
 - the compose setup also needs the absolute host project path so execution temp directories can be mounted correctly into runtime containers
-- the shared integrated terminal runs inside the server container, so when you use Docker you also get a preprovisioned Linux dev environment for session terminals
+- the shared integrated terminal now runs in a dedicated per-session Docker sandbox, not directly as a host shell
+- when you use Docker, terminal workspace mounts are stored under `.docker-data/terminals`
 
 Create a root `.env` from `.env.example` and set the absolute repo path:
 
@@ -149,10 +150,31 @@ Safety defaults already enabled:
 - timeout handling
 - temp directory cleanup
 
+## Shared Terminal Security Model
+
+The integrated terminal is now isolated per session using a dedicated Docker container shell.
+
+Security defaults for the terminal sandbox:
+
+- per-session container, not a host shell
+- `--network none` by default
+- read-only container filesystem with writable `/workspace` bind mount only
+- `--cap-drop ALL`
+- `--security-opt no-new-privileges`
+- `--pids-limit`
+- CPU and memory limits
+- container destroyed when the room is cleaned up
+
+Important tradeoff:
+
+- this is substantially safer than a host PTY and is appropriate for demos and controlled environments
+- it is still not a full hostile multi-tenant production sandbox, because it relies on the local Docker daemon and a writable workspace mount
+- if you need outbound package installs in the terminal, you would have to explicitly relax `ITECIFY_TERMINAL_NETWORK_MODE`; the secure default keeps the sandbox offline
+
 ## Notes
 
 - workspace and session state are intentionally in-memory for hackathon speed
-- the shared integrated terminal is a real session-scoped PTY and is practical for local/demo use, not hostile multi-tenant production
+- the shared integrated terminal is now a session-scoped Docker sandbox and is much safer for demo use than the previous host PTY model
 - AI suggestions require a valid Gemini API key on the server
 
 ## Verification

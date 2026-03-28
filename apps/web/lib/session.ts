@@ -60,6 +60,15 @@ export function buildDevSessionUrl(sessionCode: string) {
   return `/dev/${encodeURIComponent(normalizeSessionCode(sessionCode))}`;
 }
 
+export function buildSessionInviteUrl(sessionCode: string, origin?: string) {
+  const sessionPath = buildDevSessionUrl(sessionCode);
+  const normalizedOrigin =
+    origin?.trim().replace(/\/$/, "") ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+
+  return normalizedOrigin ? `${normalizedOrigin}${sessionPath}` : sessionPath;
+}
+
 export function formatSessionCodeForDisplay(sessionCode: string) {
   return normalizeSessionCode(sessionCode);
 }

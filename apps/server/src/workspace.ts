@@ -1047,44 +1047,97 @@ export function deleteWorkspaceNode(
   };
 }
 
-export function duplicateWorkspaceFile(
+export function duplicateWorkspaceNode(
   workspace: WorkspaceState,
   nodeId: string,
 ) {
   const node = getNode(workspace, nodeId);
 
-  if (!node || node.kind !== "file") {
-    return { workspace, changed: false, file: null };
+  if (!node) {
+    return { workspace, changed: false, node: null };
   }
 
   const uniqueName = getUniqueName(workspace, node.parentId, node.name);
 
   if (!uniqueName) {
-    return { workspace, changed: false, file: null };
+    return { workspace, changed: false, node: null };
   }
 
   const parentPath = getFolderPath(workspace, node.parentId);
 
   if (parentPath === null) {
-    return { workspace, changed: false, file: null };
+    return { workspace, changed: false, node: null };
   }
 
-  const duplicate: WorkspaceFileNode = {
-    ...node,
-    id: generateId("file"),
-    name: uniqueName,
-    path: siblingPath(parentPath, uniqueName),
-  };
+  if (node.kind === "file") {
+    const duplicate: WorkspaceFileNode = {
+      ...node,
+      id: generateId("file"),
+      name: uniqueName,
+      path: siblingPath(parentPath, uniqueName),
+    };
+
+    return {
+      workspace: {
+        ...workspace,
+        nodes: sortNodes([...workspace.nodes, duplicate]),
+        activeFileId: duplicate.id,
+        openFileIds: [
+          ...workspace.openFileIds.filter((id) => id !== duplicate.id),
+          duplicate.id,
+        ],
+      },
+      changed: true,
+      node: duplicate,
+    };
+  }
+
+  const nextRootPath = siblingPath(parentPath, uniqueName);
+  const subtreeNodes = workspace.nodes.filter(
+    (currentNode) =>
+      currentNode.id === node.id || currentNode.path.startsWith(`${node.path}/`),
+  );
+  const pathMap = new Map<string, string>([[node.path, nextRootPath]]);
+  const idMap = new Map<string, string>([[node.id, generateId("folder")]]);
+  const duplicates: WorkspaceNode[] = [];
+
+  for (const currentNode of subtreeNodes) {
+    const duplicatedPath =
+      currentNode.id === node.id
+        ? nextRootPath
+        : currentNode.path.replace(node.path, nextRootPath);
+    const duplicatedId =
+      idMap.get(currentNode.id) ??
+      generateId(currentNode.kind === "folder" ? "folder" : "file");
+
+    idMap.set(currentNode.id, duplicatedId);
+    pathMap.set(currentNode.path, duplicatedPath);
+
+    duplicates.push({
+      ...currentNode,
+      id: duplicatedId,
+      name: currentNode.id === node.id ? uniqueName : currentNode.name,
+      parentId:
+        currentNode.id === node.id
+          ? node.parentId
+          : currentNode.parentId
+            ? (idMap.get(currentNode.parentId) ?? currentNode.parentId)
+            : null,
+      path: duplicatedPath,
+    });
+  }
+
+  const duplicatedRoot = duplicates.find(
+    (currentNode) => currentNode.path === nextRootPath,
+  ) ?? null;
 
   return {
     workspace: {
       ...workspace,
-      nodes: sortNodes([...workspace.nodes, duplicate]),
-      activeFileId: duplicate.id,
-      openFileIds: [...workspace.openFileIds.filter((id) => id !== duplicate.id), duplicate.id],
+      nodes: sortNodes([...workspace.nodes, ...duplicates]),
     },
     changed: true,
-    file: duplicate,
+    node: duplicatedRoot,
   };
 }
 

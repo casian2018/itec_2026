@@ -645,12 +645,10 @@ export function IdeFileExplorer({
           }),
       });
 
-      if (isFile) {
-        actions.push({
-          label: "Duplicate",
-          onClick: () => onDuplicate(node.id),
-        });
-      }
+      actions.push({
+        label: isFolder ? "Duplicate Folder" : "Duplicate File",
+        onClick: () => onDuplicate(node.id),
+      });
 
       actions.push({
         label: "Move",

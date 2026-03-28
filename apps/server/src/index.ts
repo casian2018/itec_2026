@@ -84,6 +84,7 @@ const SUPPORTED_IDE_THEMES: IdeThemeId[] = [
   "neon",
 ];
 const MAX_PROJECT_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024;
+const EMPTY_ROOM_CLEANUP_DELAY_MS = 60_000;
 
 const app = express();
 const httpServer = createServer(app);
@@ -656,6 +657,7 @@ const sessionTerminalManager = new SessionTerminalManager({
   roomStore,
   terminal: roomTerminal,
 });
+const emptyRoomCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const executionRouter = new ExecutionRouter([
   new JavaScriptExecutionService(),
@@ -689,6 +691,35 @@ function broadcastDeparture(result: LeaveRoomResult, socketId: string) {
   }
 }
 
+function cancelEmptyRoomCleanup(roomId: string) {
+  const existingTimer = emptyRoomCleanupTimers.get(roomId);
+
+  if (!existingTimer) {
+    return;
+  }
+
+  clearTimeout(existingTimer);
+  emptyRoomCleanupTimers.delete(roomId);
+}
+
+function scheduleEmptyRoomCleanup(roomId: string) {
+  cancelEmptyRoomCleanup(roomId);
+
+  const cleanupTimer = setTimeout(() => {
+    emptyRoomCleanupTimers.delete(roomId);
+
+    const didDeleteRoom = roomStore.deleteRoomIfEmpty(roomId);
+
+    if (!didDeleteRoom) {
+      return;
+    }
+
+    void sessionTerminalManager.destroyRoom(roomId);
+  }, EMPTY_ROOM_CLEANUP_DELAY_MS);
+
+  emptyRoomCleanupTimers.set(roomId, cleanupTimer);
+}
+
 io.on("connection", (socket) => {
   socket.on("room:join", async (payload: JoinRoomPayload) => {
     const roomId = normalizeRoomId(payload.roomId);
@@ -700,6 +731,7 @@ io.on("connection", (socket) => {
     }
 
     const joinResult = roomStore.joinRoom(roomId, socket.id, participantName, userId);
+    cancelEmptyRoomCleanup(roomId);
 
     if (joinResult.previousRoomId) {
       socket.leave(joinResult.previousRoomId);
@@ -709,12 +741,16 @@ io.on("connection", (socket) => {
           room: joinResult.previousRoom,
           participant: joinResult.previousParticipant,
           deletedRoom: joinResult.deletedPreviousRoom,
+          roomBecameEmpty: joinResult.previousRoomBecameEmpty,
         },
         socket.id,
       );
 
       if (joinResult.deletedPreviousRoom) {
+        cancelEmptyRoomCleanup(joinResult.previousRoomId);
         await sessionTerminalManager.destroyRoom(joinResult.previousRoomId);
+      } else if (joinResult.previousRoomBecameEmpty) {
+        scheduleEmptyRoomCleanup(joinResult.previousRoomId);
       }
     }
 
@@ -1784,7 +1820,10 @@ io.on("connection", (socket) => {
     broadcastDeparture(leaveResult, socket.id);
 
     if (leaveResult.deletedRoom && leaveResult.roomId) {
+      cancelEmptyRoomCleanup(leaveResult.roomId);
       void sessionTerminalManager.destroyRoom(leaveResult.roomId);
+    } else if (leaveResult.roomBecameEmpty && leaveResult.roomId) {
+      scheduleEmptyRoomCleanup(leaveResult.roomId);
     }
   });
 });

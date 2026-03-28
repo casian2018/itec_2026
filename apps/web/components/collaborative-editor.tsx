@@ -29,6 +29,10 @@ type CollaborativeEditorProps = {
   language?: string;
   readOnly?: boolean;
   ideTheme: IdeThemeId;
+  revealRequest?: {
+    lineNumber: number;
+    nonce: number;
+  } | null;
 };
 
 const cursorThemes = [
@@ -111,6 +115,7 @@ export function CollaborativeEditor({
   language = "javascript",
   readOnly = false,
   ideTheme,
+  revealRequest = null,
 }: CollaborativeEditorProps) {
   const showEmptyState = value.trim().length === 0;
   const editorRef = useRef<MonacoEditorNamespace.IStandaloneCodeEditor | null>(
@@ -163,6 +168,28 @@ export function CollaborativeEditor({
       }
     };
   }, []);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+
+    if (!editor || !revealRequest) {
+      return;
+    }
+
+    const model = editor.getModel();
+    const maxLineNumber = model?.getLineCount() ?? 1;
+    const targetLineNumber = Math.min(
+      Math.max(revealRequest.lineNumber, 1),
+      maxLineNumber,
+    );
+
+    editor.setPosition({
+      lineNumber: targetLineNumber,
+      column: 1,
+    });
+    editor.revealLineInCenter(targetLineNumber);
+    editor.focus();
+  }, [revealRequest]);
 
   function handleMount(
     editor: MonacoEditorNamespace.IStandaloneCodeEditor,

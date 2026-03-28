@@ -12,6 +12,10 @@ type SharedTerminalPanelProps = {
   onInput: (data: string) => void;
   onResize: (cols: number, rows: number) => void;
   onClear: () => void;
+  onCommand: (command: string) => void;
+  onRunActiveFile: () => void;
+  canRunActiveFile: boolean;
+  activeFileLabel?: string | null;
 };
 
 function renderTerminalEntry(entry: TerminalEntry) {
@@ -37,6 +41,10 @@ export function SharedTerminalPanel({
   onInput,
   onResize,
   onClear,
+  onCommand,
+  onRunActiveFile,
+  canRunActiveFile,
+  activeFileLabel,
 }: SharedTerminalPanelProps) {
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -175,6 +183,23 @@ export function SharedTerminalPanel({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={!canInteract}
+            onClick={() => onCommand("help")}
+            className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Help
+          </button>
+          <button
+            type="button"
+            disabled={!canRunActiveFile}
+            onClick={onRunActiveFile}
+            className="border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:brightness-100"
+            title={activeFileLabel ? `Run ${activeFileLabel}` : "Run active file"}
+          >
+            Run Active
+          </button>
           <span className="border border-cyan-400/14 bg-cyan-400/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-300">
             {canInteract ? "Live PTY" : "Read Only"}
           </span>
