@@ -22,12 +22,15 @@ type DockerExecutionConfig = {
 };
 
 const EXECUTION_TIMEOUT_MS = 10_000;
+const IMAGE_PREP_TIMEOUT_MS = 120_000;
 const CONTAINER_WORKDIR = "/workspace";
 const DOCKER_MEMORY_LIMIT = "128m";
 const DOCKER_CPU_LIMIT = "0.5";
 const DOCKER_PIDS_LIMIT = "64";
 const EXECUTION_TMP_ROOT =
   process.env.ITECIFY_EXECUTION_TMP_ROOT?.trim() || tmpdir();
+const preparedImages = new Set<string>();
+const inflightImagePreparations = new Map<string, Promise<void>>();
 
 function buildChunk(
   roomId: string,
@@ -91,6 +94,137 @@ function stopDockerRun(child: ChildProcess, containerName: string | null) {
   }, 500).unref();
 }
 
+function stopChildProcess(child: ChildProcess) {
+  child.kill("SIGTERM");
+
+  setTimeout(() => {
+    if (!child.killed) {
+      child.kill("SIGKILL");
+    }
+  }, 500).unref();
+}
+
+async function runDockerCommand(args: string[]) {
+  const child = spawn("docker", args, {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    stdout += chunk.toString("utf8");
+  });
+
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += chunk.toString("utf8");
+  });
+
+  const [exitCode] = (await once(child, "close")) as [number | null];
+
+  return {
+    exitCode: exitCode ?? 1,
+    stdout: stdout.trim(),
+    stderr: stderr.trim(),
+  };
+}
+
+async function ensureDockerImageAvailable(
+  image: string,
+  roomId: string,
+  runId: string,
+  onOutput: (payload: RunOutputPayload) => void,
+) {
+  if (preparedImages.has(image)) {
+    return;
+  }
+
+  const existingPreparation = inflightImagePreparations.get(image);
+
+  if (existingPreparation) {
+    await existingPreparation;
+    return;
+  }
+
+  const preparation = (async () => {
+    const inspectResult = await runDockerCommand(["image", "inspect", image]);
+
+    if (inspectResult.exitCode === 0) {
+      preparedImages.add(image);
+      return;
+    }
+
+    onOutput(
+      buildChunk(
+        roomId,
+        runId,
+        "stdout",
+        `runtime: pulling Docker image ${image} (first run may take a little longer)`,
+      ),
+    );
+
+    const pullProcess = spawn("docker", ["pull", image], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let timedOut = false;
+    let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      timedOut = true;
+      stopChildProcess(pullProcess);
+    }, IMAGE_PREP_TIMEOUT_MS);
+    timeout.unref();
+
+    let stderr = "";
+
+    pullProcess.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    const [exitCode] = (await once(pullProcess, "close")) as [number | null];
+
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+
+    if (timedOut) {
+      throw new Error(
+        `Docker image pull for ${image} timed out after ${
+          IMAGE_PREP_TIMEOUT_MS / 1000
+        } seconds`,
+      );
+    }
+
+    if ((exitCode ?? 1) !== 0) {
+      const pullError = stderr.trim();
+      throw new Error(
+        pullError
+          ? `Docker image pull failed for ${image}: ${pullError}`
+          : `Docker image pull failed for ${image}`,
+      );
+    }
+
+    preparedImages.add(image);
+
+    onOutput(
+      buildChunk(
+        roomId,
+        runId,
+        "stdout",
+        `runtime: Docker image ${image} is ready`,
+      ),
+    );
+  })();
+
+  inflightImagePreparations.set(image, preparation);
+
+  try {
+    await preparation;
+  } finally {
+    inflightImagePreparations.delete(image);
+  }
+}
+
 export abstract class DockerExecutionService implements ExecutionService {
   readonly id: string;
   readonly label: string;
@@ -121,6 +255,8 @@ export abstract class DockerExecutionService implements ExecutionService {
     let containerName: string | null = null;
 
     try {
+      await ensureDockerImageAvailable(this.image, roomId, runId, onOutput);
+
       runDirectory = await createRunDirectory();
       await writeFile(join(runDirectory, this.entryFileName), file.content, "utf8");
 

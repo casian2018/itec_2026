@@ -23,6 +23,8 @@ type SessionTerminalManagerDependencies = {
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
 const TERM_NAME = "xterm-256color";
+const TERMINAL_TOOLCHAIN_LABEL =
+  "node, npm, pnpm, yarn, python, pip, gcc, g++, make, git, curl, wget, ripgrep, jq, zip/unzip";
 
 function resolveShell() {
   const candidates = [process.env.SHELL, "/bin/bash", "/bin/zsh", "/bin/sh"];
@@ -153,6 +155,11 @@ export class SessionTerminalManager {
       roomId,
       "system",
       `Shared terminal ready for session ${roomId}. Working directory: ${workingDirectory}`,
+    );
+    this.dependencies.terminal.appendText(
+      roomId,
+      "system",
+      `Toolchain available in the Docker IDE environment: ${TERMINAL_TOOLCHAIN_LABEL}`,
     );
 
     return terminal;

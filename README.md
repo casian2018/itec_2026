@@ -14,6 +14,7 @@ It currently includes:
 - ZIP project import
 - snapshots and lightweight presentation/replay mode
 - room-isolated state for participants, files, terminal, preview, and execution
+- a Docker-backed shared terminal toolchain with Node.js, npm, pnpm, yarn, Python, pip, gcc, g++, git, curl, ripgrep, jq, zip/unzip, and common CLI utilities
 
 ## Stack
 
@@ -78,6 +79,7 @@ Important:
 - the backend itself launches Docker containers for code execution
 - because of that, the server container mounts the host Docker socket
 - the compose setup also needs the absolute host project path so execution temp directories can be mounted correctly into runtime containers
+- the shared integrated terminal runs inside the server container, so when you use Docker you also get a preprovisioned Linux dev environment for session terminals
 
 Create a root `.env` from `.env.example` and set the absolute repo path:
 

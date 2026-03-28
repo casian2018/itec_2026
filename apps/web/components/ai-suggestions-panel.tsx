@@ -44,6 +44,54 @@ function formatExplanation(explanation: string) {
     .filter(Boolean);
 }
 
+function blockModeLabel(mode: AiBlock["mode"]) {
+  if (mode === "next-line") {
+    return "Next Line";
+  }
+
+  if (mode === "optimize") {
+    return "Optimize File";
+  }
+
+  return "Suggested Improvement";
+}
+
+function blockCodeLabel(block: AiBlock) {
+  if (block.applyMode === "replace") {
+    return "Optimized File";
+  }
+
+  if (block.mode === "next-line") {
+    return "Continuation";
+  }
+
+  return "Suggested Code";
+}
+
+function blockTargetLabel(block: AiBlock) {
+  if (block.applyMode === "replace") {
+    return "Whole file rewrite";
+  }
+
+  return `Insert after line ${block.insertAfterLine}`;
+}
+
+function acceptLabel(block: AiBlock) {
+  if (block.status === "accepted") {
+    return block.applyMode === "replace" ? "Rewrite Applied" : "Accepted";
+  }
+
+  if (block.applyMode === "replace") {
+    return "Apply Rewrite";
+  }
+
+  if (block.mode === "next-line") {
+    return "Insert Continuation";
+  }
+
+  return "Accept";
+}
+
 function EmptyState() {
   return (
     <div className="border border-dashed border-[var(--line-strong)] bg-[var(--bg-panel-soft)] p-4">
@@ -54,8 +102,8 @@ function EmptyState() {
         </p>
       </div>
       <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-        Ask Gemini to generate the first review block for this shared file. New
-        suggestions will appear here for everyone in the current session.
+        Use AI Assist for broader improvements, Next Line for a likely continuation,
+        or Optimize File for a whole-file rewrite that everyone in this session can review.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
@@ -63,6 +111,9 @@ function EmptyState() {
         </span>
         <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
           Shared with session
+        </span>
+        <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
+          Review before apply
         </span>
       </div>
     </div>
@@ -83,7 +134,7 @@ export function AiSuggestionsPanel({
           AI Suggestions
         </h2>
         <p className="mt-2 max-w-sm text-[12px] leading-5 text-[var(--text-muted)]">
-          Gemini generates reviewable code blocks before anything gets inserted into the editor.
+          Gemini generates reviewable continuations, improvements, and full-file rewrites before anything changes in the editor.
         </p>
       </div>
 
@@ -107,7 +158,7 @@ export function AiSuggestionsPanel({
             </div>
             <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
               Reviewing the current editor snapshot and preparing a session-shared
-              suggestion block.
+              AI block for the active file.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <span className="border border-[var(--accent-line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--accent)]">
@@ -137,14 +188,20 @@ export function AiSuggestionsPanel({
                       AI Generated
                     </span>
                     <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                      Review Block
+                      {blockModeLabel(block.mode)}
                     </span>
                   </div>
                   <h3 className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
-                    Suggestion Block
+                    {block.applyMode === "replace"
+                      ? "Whole-file optimization proposal"
+                      : block.mode === "next-line"
+                        ? "Cursor-aware continuation proposal"
+                        : "Suggestion block"}
                   </h3>
                   <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                    Proposed change with reasoning first, code second.
+                    {block.applyMode === "replace"
+                      ? "Review the reasoning first, then apply the rewritten file if it looks right."
+                      : "Review the reasoning first, then apply the suggested code block."}
                   </p>
                 </div>
 
@@ -189,10 +246,10 @@ export function AiSuggestionsPanel({
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <div className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2">
                   <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Insert After Line
+                    Apply Mode
                   </p>
                   <p className="mt-1 font-mono text-xs text-[var(--text-secondary)]">
-                    {block.insertAfterLine}
+                    {blockTargetLabel(block)}
                   </p>
                 </div>
 
@@ -209,10 +266,10 @@ export function AiSuggestionsPanel({
               <div className="mt-4 border border-[var(--line)] bg-[var(--editor-inline)] p-4">
                 <div className="flex items-center justify-between gap-3">
                   <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Suggested Code
+                    {blockCodeLabel(block)}
                   </p>
                   <span className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                    Patch
+                    {block.applyMode === "replace" ? "Rewrite" : "Patch"}
                   </span>
                 </div>
                 <pre className="mt-3 overflow-x-auto font-mono text-[13px] leading-6 text-[var(--terminal-text)]">
@@ -230,7 +287,7 @@ export function AiSuggestionsPanel({
                     !isPending,
                   )}`}
                 >
-                  {block.status === "accepted" ? "Accepted" : "Accept"}
+                  {acceptLabel(block)}
                 </button>
                 <button
                   type="button"

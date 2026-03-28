@@ -1,5 +1,8 @@
 import type {
   AiBlock,
+  AiEditChangeStatus,
+  AiEditProposal,
+  ChatMessage,
   IdeThemeId,
   Participant,
   RoomSnapshot,
@@ -12,6 +15,7 @@ import type {
   WorkspaceState,
 } from "./types.js";
 import {
+  applyApprovedLineChangesToWorkspaceFile,
   cloneWorkspaceState,
   closeWorkspaceTab,
   createEmptyWorkspace,
@@ -39,6 +43,9 @@ type StoredRoom = {
   aiBlocks: Map<string, AiBlock>;
   snapshots: RoomSnapshot[];
   terminalEntries: TerminalEntry[];
+  sharedChatMessages: ChatMessage[];
+  privateChatMessages: Map<string, ChatMessage[]>;
+  privateAiProposals: Map<string, AiEditProposal[]>;
 };
 
 type RoomMutationResult = {
@@ -51,8 +58,17 @@ type AiBlockMutationResult = {
   block: AiBlock;
   room: RoomState;
   changed: boolean;
-  inserted: boolean;
+  applied: boolean;
   snapshot: RoomSnapshot | null;
+};
+
+type AiEditProposalMutationResult = {
+  proposal: AiEditProposal;
+  room: RoomState;
+  changed: boolean;
+  applied: boolean;
+  snapshot: RoomSnapshot | null;
+  error: string | null;
 };
 
 export type RestoreSnapshotResult = {
@@ -81,6 +97,9 @@ export type JoinRoomResult = {
 
 const MAX_ROOM_SNAPSHOTS = 12;
 const MAX_TERMINAL_ENTRIES = 600;
+const MAX_SHARED_CHAT_MESSAGES = 200;
+const MAX_PRIVATE_CHAT_MESSAGES = 120;
+const MAX_PRIVATE_AI_PROPOSALS = 24;
 const AUTO_SNAPSHOT_INTERVAL_MS = 15_000;
 
 export class RoomStore {
@@ -111,10 +130,15 @@ export class RoomStore {
     };
   }
 
-  joinRoom(roomId: string, socketId: string, name: string): JoinRoomResult {
+  joinRoom(
+    roomId: string,
+    socketId: string,
+    name: string,
+    userId?: string,
+  ): JoinRoomResult {
     const previousMembership = this.leaveRoomBySocket(socketId);
     const { room, createdRoom } = this.ensureRoom(roomId);
-    const participant = { socketId, name };
+    const participant = { socketId, name, userId };
 
     room.participants.set(socketId, participant);
     this.socketToRoom.set(socketId, roomId);
@@ -522,6 +546,7 @@ export class RoomStore {
 
     room.workspace = cloneWorkspaceState(workspace);
     room.aiBlocks.clear();
+    room.privateAiProposals.clear();
     room.snapshots = [];
 
     const previewHtmlFile = getPreviewFiles(room.workspace).htmlFile;
@@ -576,6 +601,227 @@ export class RoomStore {
     return entry;
   }
 
+  getSharedChatMessages(roomId: string) {
+    const room = this.rooms.get(roomId);
+    return room ? [...room.sharedChatMessages] : [];
+  }
+
+  addSharedChatMessage(roomId: string, message: ChatMessage) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    room.sharedChatMessages = [
+      ...room.sharedChatMessages,
+      message,
+    ].slice(-MAX_SHARED_CHAT_MESSAGES);
+
+    return message;
+  }
+
+  getPrivateChatMessages(roomId: string, userId: string) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return [];
+    }
+
+    return [...(room.privateChatMessages.get(userId) ?? [])];
+  }
+
+  addPrivateChatMessage(roomId: string, userId: string, message: ChatMessage) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const nextMessages = [
+      ...(room.privateChatMessages.get(userId) ?? []),
+      message,
+    ].slice(-MAX_PRIVATE_CHAT_MESSAGES);
+
+    room.privateChatMessages.set(userId, nextMessages);
+
+    return message;
+  }
+
+  getPrivateAiProposals(roomId: string, userId: string) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return [];
+    }
+
+    return [...(room.privateAiProposals.get(userId) ?? [])].sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt),
+    );
+  }
+
+  addPrivateAiProposal(roomId: string, userId: string, proposal: AiEditProposal) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const nextProposals = [
+      proposal,
+      ...(room.privateAiProposals.get(userId) ?? []).filter(
+        (currentProposal) => currentProposal.id !== proposal.id,
+      ),
+    ].slice(0, MAX_PRIVATE_AI_PROPOSALS);
+
+    room.privateAiProposals.set(userId, nextProposals);
+
+    return proposal;
+  }
+
+  updatePrivateAiProposalLineStatus(
+    roomId: string,
+    userId: string,
+    proposalId: string,
+    changeId: string,
+    status: AiEditChangeStatus,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const proposals = room.privateAiProposals.get(userId) ?? [];
+    let nextProposal: AiEditProposal | null = null;
+    let changed = false;
+
+    const nextProposals = proposals.map((proposal) => {
+      if (proposal.id !== proposalId) {
+        return proposal;
+      }
+
+      if (proposal.status !== "pending") {
+        nextProposal = proposal;
+        return proposal;
+      }
+
+      const nextChanges = proposal.changes.map((change) => {
+        if (change.id !== changeId || change.status === status) {
+          return change;
+        }
+
+        changed = true;
+
+        return {
+          ...change,
+          status,
+        };
+      });
+
+      nextProposal = changed
+        ? {
+            ...proposal,
+            changes: nextChanges,
+          }
+        : proposal;
+
+      return nextProposal;
+    });
+
+    if (!nextProposal) {
+      return null;
+    }
+
+    if (changed) {
+      room.privateAiProposals.set(userId, nextProposals);
+    }
+
+    return {
+      proposal: nextProposal,
+      room: this.toRoomState(room),
+      changed,
+    };
+  }
+
+  applyPrivateAiProposal(
+    roomId: string,
+    userId: string,
+    proposalId: string,
+  ): AiEditProposalMutationResult | null {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const proposals = room.privateAiProposals.get(userId) ?? [];
+    const proposal = proposals.find((currentProposal) => currentProposal.id === proposalId);
+
+    if (!proposal) {
+      return null;
+    }
+
+    if (proposal.status !== "pending") {
+      return {
+        proposal,
+        room: this.toRoomState(room),
+        changed: false,
+        applied: false,
+        snapshot: null,
+        error: proposal.status === "applied"
+          ? "This proposal was already applied."
+          : "This proposal is no longer pending.",
+      };
+    }
+
+    const applicationResult = applyApprovedLineChangesToWorkspaceFile(
+      room.workspace,
+      proposal.fileId,
+      proposal.baseContent,
+      proposal.changes,
+    );
+
+    if (applicationResult.error || !applicationResult.file) {
+      return {
+        proposal,
+        room: this.toRoomState(room),
+        changed: false,
+        applied: false,
+        snapshot: null,
+        error: applicationResult.error ?? "Unable to apply the approved AI changes.",
+      };
+    }
+
+    room.workspace = applicationResult.workspace;
+
+    const updatedProposal: AiEditProposal = {
+      ...proposal,
+      status: "applied",
+      appliedAt: new Date().toISOString(),
+    };
+
+    room.privateAiProposals.set(
+      userId,
+      proposals.map((currentProposal) =>
+        currentProposal.id === proposalId ? updatedProposal : currentProposal,
+      ),
+    );
+
+    const snapshot = applicationResult.changed
+      ? this.captureSnapshot(room, "AI line changes applied", true)
+      : null;
+
+    return {
+      proposal: updatedProposal,
+      room: this.toRoomState(room),
+      changed: true,
+      applied: applicationResult.changed,
+      snapshot,
+      error: null,
+    };
+  }
+
   clearTerminalEntries(roomId: string) {
     const room = this.rooms.get(roomId);
 
@@ -606,23 +852,30 @@ export class RoomStore {
         block: existingBlock,
         room: this.toRoomState(room),
         changed: false,
-        inserted: false,
+        applied: false,
         snapshot: null,
       };
     }
 
-    const insertionResult = insertCodeIntoWorkspaceFile(
-      room.workspace,
-      existingBlock.fileId,
-      existingBlock.code,
-      existingBlock.insertAfterLine,
-    );
+    const applicationResult =
+      existingBlock.applyMode === "replace"
+        ? updateWorkspaceFileContent(
+            room.workspace,
+            existingBlock.fileId,
+            existingBlock.code,
+          )
+        : insertCodeIntoWorkspaceFile(
+            room.workspace,
+            existingBlock.fileId,
+            existingBlock.code,
+            existingBlock.insertAfterLine,
+          );
 
-    if (!insertionResult.file) {
+    if (!applicationResult.file) {
       return null;
     }
 
-    room.workspace = insertionResult.workspace;
+    room.workspace = applicationResult.workspace;
 
     const updatedBlock: AiBlock = {
       ...existingBlock,
@@ -630,15 +883,23 @@ export class RoomStore {
     };
 
     room.aiBlocks.set(blockId, updatedBlock);
-    const snapshot = insertionResult.changed
-      ? this.captureSnapshot(room, "AI patch accepted", true)
+    const snapshot = applicationResult.changed
+      ? this.captureSnapshot(
+          room,
+          existingBlock.applyMode === "replace"
+            ? "AI optimization accepted"
+            : existingBlock.mode === "next-line"
+              ? "AI continuation accepted"
+              : "AI patch accepted",
+          true,
+        )
       : null;
 
     return {
       block: updatedBlock,
       room: this.toRoomState(room),
       changed: true,
-      inserted: insertionResult.changed,
+      applied: applicationResult.changed,
       snapshot,
     };
   }
@@ -661,7 +922,7 @@ export class RoomStore {
         block: existingBlock,
         room: this.toRoomState(room),
         changed: false,
-        inserted: false,
+        applied: false,
         snapshot: null,
       };
     }
@@ -677,7 +938,7 @@ export class RoomStore {
       block: updatedBlock,
       room: this.toRoomState(room),
       changed: true,
-      inserted: false,
+      applied: false,
       snapshot: null,
     };
   }
@@ -791,6 +1052,9 @@ export class RoomStore {
       aiBlocks: new Map(),
       snapshots: [],
       terminalEntries: [],
+      sharedChatMessages: [],
+      privateChatMessages: new Map(),
+      privateAiProposals: new Map(),
     };
     this.rooms.set(roomId, room);
 

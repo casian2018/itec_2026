@@ -8,12 +8,12 @@ services:
       CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      ITECIFY_EXECUTION_TMP_ROOT: ${HOST_PROJECT_ROOT}/.docker-data/executions
+      ITECIFY_EXECUTION_TMP_ROOT: ${HOST_PROJECT_ROOT:?Set HOST_PROJECT_ROOT in the root .env to your absolute repo path}/.docker-data/executions
     ports:
       - "4000:4000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${HOST_PROJECT_ROOT}:${HOST_PROJECT_ROOT}
+      - ${HOST_PROJECT_ROOT:?Set HOST_PROJECT_ROOT in the root .env to your absolute repo path}:${HOST_PROJECT_ROOT:?Set HOST_PROJECT_ROOT in the root .env to your absolute repo path}
     restart: unless-stopped
 
   web:

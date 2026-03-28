@@ -3,7 +3,10 @@ import express from "express";
 import { createServer } from "node:http";
 import multer from "multer";
 import { Server } from "socket.io";
-import { generateGeminiSuggestion } from "./ai/gemini-codegen.js";
+import {
+  generateGeminiEditProposal,
+  generateGeminiSuggestion,
+} from "./ai/gemini-codegen.js";
 import { createExecutionRunner } from "./execution/create-execution-runner.js";
 import { ExecutionRouter } from "./execution/execution-router.js";
 import { InMemoryExecutionState } from "./execution/in-memory-execution-state.js";
@@ -29,16 +32,24 @@ import type {
   AiBlock,
   AiBlockActionPayload,
   AiBlockCreatePayload,
+  AiEditProposal,
+  AiSuggestionMode,
+  ChatAuthorType,
+  ChatMessage,
   ClientToServerEvents,
   CursorUpdatePayload,
   IdeThemeId,
   InterServerEvents,
   JoinRoomPayload,
+  PrivateChatSendPayload,
   Participant,
   RoomSnapshot,
+  SharedChatSendPayload,
   ServerToClientEvents,
   SnapshotRestorePayload,
   SocketData,
+  AiProposalApplyPayload,
+  AiProposalLineActionPayload,
   TerminalCommandPayload,
   TerminalClearPayload,
   TerminalEntry,
@@ -72,7 +83,7 @@ const SUPPORTED_IDE_THEMES: IdeThemeId[] = [
   "github",
   "neon",
 ];
-const MAX_PROJECT_ZIP_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_PROJECT_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 const app = express();
 const httpServer = createServer(app);
@@ -215,12 +226,12 @@ app.post("/sessions/:sessionCode/import", (request, response) => {
       return;
     }
 
-    const room = roomStore.getRoom(roomId);
+    const room = roomStore.getRoom(roomId) ?? roomStore.createRoom(roomId)?.room;
 
     if (!room) {
-      response.status(404).json({
+      response.status(500).json({
         ok: false,
-        error: "Session not found or no longer active.",
+        error: "Unable to prepare that session for ZIP import.",
       });
       return;
     }
@@ -327,6 +338,8 @@ function buildAiBlock(
     code: string;
     explanation: string;
     insertAfterLine: number;
+    mode: AiSuggestionMode;
+    applyMode: "insert" | "replace";
   },
 ): AiBlock {
   const suffix = Math.random().toString(36).slice(2, 8);
@@ -335,11 +348,74 @@ function buildAiBlock(
     id: `aiblock_${Date.now()}_${suffix}`,
     roomId,
     fileId,
+    mode: suggestion.mode,
+    applyMode: suggestion.applyMode,
     code: suggestion.code,
     explanation: suggestion.explanation,
     insertAfterLine: suggestion.insertAfterLine,
     status: "pending",
     createdAt: new Date().toISOString(),
+  };
+}
+
+function buildChatMessage({
+  roomId,
+  channel,
+  authorType,
+  authorName,
+  content,
+  userId,
+  fileId,
+}: {
+  roomId: string;
+  channel: ChatMessage["channel"];
+  authorType: ChatAuthorType;
+  authorName: string;
+  content: string;
+  userId?: string;
+  fileId?: string | null;
+}): ChatMessage {
+  return {
+    id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    roomId,
+    channel,
+    authorType,
+    authorName,
+    content,
+    createdAt: new Date().toISOString(),
+    userId,
+    fileId: fileId ?? null,
+  };
+}
+
+function buildAiEditProposal(
+  roomId: string,
+  userId: string,
+  requesterName: string,
+  file: NonNullable<ReturnType<typeof getWorkspaceFile>>,
+  prompt: string,
+  suggestion: Awaited<ReturnType<typeof generateGeminiEditProposal>>,
+): AiEditProposal {
+  const createdAt = new Date().toISOString();
+
+  return {
+    id: `aiproposal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    roomId,
+    fileId: file.id,
+    filePath: file.path,
+    requesterUserId: userId,
+    requesterName,
+    prompt,
+    explanation: suggestion.explanation,
+    baseContent: file.content,
+    status: "pending",
+    changes: suggestion.changes.map((change) => ({
+      id: `aichange_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      ...change,
+      status: "pending",
+    })),
+    createdAt,
+    appliedAt: null,
   };
 }
 
@@ -355,8 +431,20 @@ function normalizeParticipantName(name: string, socketId: string) {
   return name.trim() || `Guest-${socketId.slice(0, 4)}`;
 }
 
+function normalizeUserId(userId: string | undefined, socketId: string) {
+  return userId?.trim() || socketId;
+}
+
 function normalizeCode(code: string) {
   return code.replace(/\r\n/g, "\n");
+}
+
+function normalizeAiSuggestionMode(mode?: string): AiSuggestionMode {
+  if (mode === "next-line" || mode === "optimize") {
+    return mode;
+  }
+
+  return "assist";
 }
 
 function createRunId() {
@@ -429,6 +517,70 @@ function emitTerminalSystemMessage(roomId: string, entry: TerminalEntry) {
 
 function emitRoomState(room: Parameters<ServerToClientEvents["room:state"]>[0]) {
   io.to(room.roomId).emit("room:state", room);
+}
+
+function emitToUserInRoom<EventName extends keyof ServerToClientEvents>(
+  roomId: string,
+  userId: string,
+  eventName: EventName,
+  payload: Parameters<ServerToClientEvents[EventName]>[0],
+) {
+  const room = roomStore.getRoom(roomId);
+
+  if (!room) {
+    return;
+  }
+
+  const emittedSocketIds = new Set<string>();
+
+  for (const participant of room.participants) {
+    if (participant.userId !== userId || emittedSocketIds.has(participant.socketId)) {
+      continue;
+    }
+
+    emittedSocketIds.add(participant.socketId);
+    (io.to(participant.socketId).emit as (...args: unknown[]) => void)(
+      eventName,
+      payload,
+    );
+  }
+}
+
+function emitSharedChatMessage(roomId: string, message: ChatMessage) {
+  io.to(roomId).emit("chat:shared:message", { message });
+}
+
+function emitPrivateChatInit(roomId: string, userId: string, messages: ChatMessage[]) {
+  emitToUserInRoom(roomId, userId, "chat:private:init", {
+    roomId,
+    messages,
+  });
+}
+
+function emitPrivateChatMessage(roomId: string, userId: string, message: ChatMessage) {
+  emitToUserInRoom(roomId, userId, "chat:private:message", { message });
+}
+
+function emitAiProposalInit(roomId: string, userId: string, proposals: AiEditProposal[]) {
+  emitToUserInRoom(roomId, userId, "ai:proposal:init", {
+    roomId,
+    proposals,
+  });
+}
+
+function emitAiProposalCreated(roomId: string, userId: string, proposal: AiEditProposal) {
+  emitToUserInRoom(roomId, userId, "ai:proposal:created", { proposal });
+}
+
+function emitAiProposalUpdated(roomId: string, userId: string, proposal: AiEditProposal) {
+  emitToUserInRoom(roomId, userId, "ai:proposal:updated", { proposal });
+}
+
+function emitAiProposalError(roomId: string, userId: string, message: string) {
+  emitToUserInRoom(roomId, userId, "ai:proposal:error", {
+    roomId,
+    message,
+  });
 }
 
 function emitWorkspaceView(
@@ -541,12 +693,13 @@ io.on("connection", (socket) => {
   socket.on("room:join", async (payload: JoinRoomPayload) => {
     const roomId = normalizeRoomId(payload.roomId);
     const participantName = normalizeParticipantName(payload.name, socket.id);
+    const userId = normalizeUserId(payload.userId, socket.id);
 
     if (!roomId) {
       return;
     }
 
-    const joinResult = roomStore.joinRoom(roomId, socket.id, participantName);
+    const joinResult = roomStore.joinRoom(roomId, socket.id, participantName, userId);
 
     if (joinResult.previousRoomId) {
       socket.leave(joinResult.previousRoomId);
@@ -568,11 +721,26 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     socket.data.roomId = roomId;
     socket.data.participantName = participantName;
+    socket.data.userId = userId;
 
     await sessionTerminalManager.ensureRoomTerminal(roomId, joinResult.room.workspace);
     const hydratedRoom = roomStore.getRoom(roomId) ?? joinResult.room;
 
     socket.emit("room:state", hydratedRoom);
+    socket.emit("chat:shared:init", {
+      roomId,
+      messages: roomStore.getSharedChatMessages(roomId),
+    });
+    emitPrivateChatInit(
+      roomId,
+      userId,
+      roomStore.getPrivateChatMessages(roomId, userId),
+    );
+    emitAiProposalInit(
+      roomId,
+      userId,
+      roomStore.getPrivateAiProposals(roomId, userId),
+    );
     socket.emit("terminal:history:init", {
       roomId,
       entries: hydratedRoom.terminalEntries,
@@ -778,11 +946,305 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("chat:shared:send", ({ roomId, content }: SharedChatSendPayload) => {
+    const normalizedRoomId = normalizeRoomId(roomId);
+    const normalizedContent = content.trim();
+
+    if (
+      !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+      !normalizedContent
+    ) {
+      return;
+    }
+
+    const message = buildChatMessage({
+      roomId: normalizedRoomId,
+      channel: "shared",
+      authorType: "user",
+      authorName: socket.data.participantName ?? socket.id,
+      content: normalizedContent,
+      userId: socket.data.userId,
+    });
+
+    const createdMessage = roomStore.addSharedChatMessage(normalizedRoomId, message);
+
+    if (!createdMessage) {
+      return;
+    }
+
+    emitSharedChatMessage(normalizedRoomId, createdMessage);
+  });
+
   socket.on(
-    "ai:block:create",
-    async ({ roomId, fileId, prompt, code }: AiBlockCreatePayload) => {
+    "chat:private:send",
+    async ({ roomId, fileId, content }: PrivateChatSendPayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
       const normalizedFileId = fileId.trim();
+      const normalizedContent = content.trim();
+      const userId = socket.data.userId?.trim() ?? socket.id;
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedFileId ||
+        !normalizedContent
+      ) {
+        return;
+      }
+
+      const room = roomStore.getRoom(normalizedRoomId);
+
+      if (!room) {
+        return;
+      }
+
+      const targetFile = getWorkspaceFile(room.workspace, normalizedFileId);
+
+      if (!targetFile) {
+        emitAiProposalError(
+          normalizedRoomId,
+          userId,
+          "The active file was not found in this session.",
+        );
+        return;
+      }
+
+      const userMessage = buildChatMessage({
+        roomId: normalizedRoomId,
+        channel: "private",
+        authorType: "user",
+        authorName: socket.data.participantName ?? socket.id,
+        content: normalizedContent,
+        userId,
+        fileId: targetFile.id,
+      });
+
+      roomStore.addPrivateChatMessage(normalizedRoomId, userId, userMessage);
+      emitPrivateChatMessage(normalizedRoomId, userId, userMessage);
+
+      try {
+        const suggestion = await generateGeminiEditProposal({
+          prompt: normalizedContent,
+          file: targetFile,
+          workspace: room.workspace,
+        });
+        const proposal = buildAiEditProposal(
+          normalizedRoomId,
+          userId,
+          socket.data.participantName ?? socket.id,
+          targetFile,
+          normalizedContent,
+          suggestion,
+        );
+        const createdProposal = roomStore.addPrivateAiProposal(
+          normalizedRoomId,
+          userId,
+          proposal,
+        );
+
+        if (!createdProposal) {
+          emitAiProposalError(
+            normalizedRoomId,
+            userId,
+            "Unable to store the AI proposal for this session.",
+          );
+          return;
+        }
+
+        const aiMessage = buildChatMessage({
+          roomId: normalizedRoomId,
+          channel: "private",
+          authorType: "ai",
+          authorName: "Gemini",
+          content: `I prepared ${createdProposal.changes.length} reviewable line changes for ${createdProposal.filePath}. Approve the changes you want, then apply them to the shared file.`,
+          userId,
+          fileId: targetFile.id,
+        });
+
+        roomStore.addPrivateChatMessage(normalizedRoomId, userId, aiMessage);
+        emitPrivateChatMessage(normalizedRoomId, userId, aiMessage);
+        emitAiProposalCreated(normalizedRoomId, userId, createdProposal);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Gemini failed to prepare a reviewable edit proposal.";
+        const aiErrorMessage = buildChatMessage({
+          roomId: normalizedRoomId,
+          channel: "private",
+          authorType: "system",
+          authorName: "AI System",
+          content: message,
+          userId,
+          fileId: normalizedFileId,
+        });
+
+        roomStore.addPrivateChatMessage(normalizedRoomId, userId, aiErrorMessage);
+        emitPrivateChatMessage(normalizedRoomId, userId, aiErrorMessage);
+        emitAiProposalError(normalizedRoomId, userId, message);
+      }
+    },
+  );
+
+  socket.on(
+    "ai:proposal:approve-line",
+    ({ roomId, proposalId, changeId }: AiProposalLineActionPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedProposalId = proposalId.trim();
+      const normalizedChangeId = changeId.trim();
+      const userId = socket.data.userId?.trim() ?? socket.id;
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedProposalId ||
+        !normalizedChangeId
+      ) {
+        return;
+      }
+
+      const result = roomStore.updatePrivateAiProposalLineStatus(
+        normalizedRoomId,
+        userId,
+        normalizedProposalId,
+        normalizedChangeId,
+        "approved",
+      );
+
+      if (!result) {
+        return;
+      }
+
+      emitAiProposalUpdated(normalizedRoomId, userId, result.proposal);
+    },
+  );
+
+  socket.on(
+    "ai:proposal:reject-line",
+    ({ roomId, proposalId, changeId }: AiProposalLineActionPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedProposalId = proposalId.trim();
+      const normalizedChangeId = changeId.trim();
+      const userId = socket.data.userId?.trim() ?? socket.id;
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedProposalId ||
+        !normalizedChangeId
+      ) {
+        return;
+      }
+
+      const result = roomStore.updatePrivateAiProposalLineStatus(
+        normalizedRoomId,
+        userId,
+        normalizedProposalId,
+        normalizedChangeId,
+        "rejected",
+      );
+
+      if (!result) {
+        return;
+      }
+
+      emitAiProposalUpdated(normalizedRoomId, userId, result.proposal);
+    },
+  );
+
+  socket.on(
+    "ai:proposal:apply",
+    async ({ roomId, proposalId }: AiProposalApplyPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedProposalId = proposalId.trim();
+      const userId = socket.data.userId?.trim() ?? socket.id;
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedProposalId
+      ) {
+        return;
+      }
+
+      const result = roomStore.applyPrivateAiProposal(
+        normalizedRoomId,
+        userId,
+        normalizedProposalId,
+      );
+
+      if (!result) {
+        return;
+      }
+
+      if (result.error) {
+        const systemMessage = buildChatMessage({
+          roomId: normalizedRoomId,
+          channel: "private",
+          authorType: "system",
+          authorName: "AI System",
+          content: result.error,
+          userId,
+          fileId: result.proposal.fileId,
+        });
+
+        roomStore.addPrivateChatMessage(normalizedRoomId, userId, systemMessage);
+        emitPrivateChatMessage(normalizedRoomId, userId, systemMessage);
+        emitAiProposalError(normalizedRoomId, userId, result.error);
+        return;
+      }
+
+      emitAiProposalUpdated(normalizedRoomId, userId, result.proposal);
+
+      if (result.snapshot) {
+        emitSnapshotCreated(normalizedRoomId, result.snapshot);
+      }
+
+      if (!result.applied) {
+        return;
+      }
+
+      const targetFile = getWorkspaceFile(
+        result.room.workspace,
+        result.proposal.fileId,
+      );
+
+      if (targetFile) {
+        io.to(normalizedRoomId).emit("workspace:file:updated", {
+          fileId: targetFile.id,
+          content: targetFile.content,
+          updatedBy: socket.data.participantName ?? socket.id,
+        });
+      }
+
+      const confirmationMessage = buildChatMessage({
+        roomId: normalizedRoomId,
+        channel: "private",
+        authorType: "ai",
+        authorName: "Gemini",
+        content: `Applied the approved AI changes to ${result.proposal.filePath}.`,
+        userId,
+        fileId: result.proposal.fileId,
+      });
+
+      roomStore.addPrivateChatMessage(normalizedRoomId, userId, confirmationMessage);
+      emitPrivateChatMessage(normalizedRoomId, userId, confirmationMessage);
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "ai:block:create",
+    async ({
+      roomId,
+      fileId,
+      prompt,
+      code,
+      mode,
+      cursorLine,
+    }: AiBlockCreatePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedFileId = fileId.trim();
+      const normalizedMode = normalizeAiSuggestionMode(mode);
 
       if (
         !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
@@ -820,7 +1282,11 @@ io.on("connection", (socket) => {
       roomTerminal.appendText(
         normalizedRoomId,
         "system",
-        `Gemini is reviewing ${effectiveFile.path} and drafting a suggestion block.`,
+        normalizedMode === "optimize"
+          ? `Gemini is optimizing ${effectiveFile.path} and drafting a full-file rewrite block.`
+          : normalizedMode === "next-line"
+            ? `Gemini is predicting the next step for ${effectiveFile.path}.`
+            : `Gemini is reviewing ${effectiveFile.path} and drafting a suggestion block.`,
       );
 
       try {
@@ -828,6 +1294,8 @@ io.on("connection", (socket) => {
           prompt: prompt.trim(),
           file: effectiveFile,
           workspace: effectiveWorkspace,
+          mode: normalizedMode,
+          cursorLine,
         });
         const block = buildAiBlock(
           normalizedRoomId,
@@ -890,7 +1358,7 @@ io.on("connection", (socket) => {
       emitSnapshotCreated(normalizedRoomId, acceptResult.snapshot);
     }
 
-    if (acceptResult.inserted) {
+    if (acceptResult.applied) {
       const targetFile = getWorkspaceFile(
         acceptResult.room.workspace,
         acceptResult.block.fileId,

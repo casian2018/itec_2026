@@ -377,7 +377,12 @@ export function inferLanguageFromExtension(
 ): WorkspaceFileLanguage {
   const lower = filename.toLowerCase();
 
-  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+  if (
+    lower.endsWith(".js") ||
+    lower.endsWith(".jsx") ||
+    lower.endsWith(".mjs") ||
+    lower.endsWith(".cjs")
+  ) {
     return "javascript";
   }
 
@@ -393,7 +398,11 @@ export function inferLanguageFromExtension(
     return "c";
   }
 
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+  if (
+    lower.endsWith(".html") ||
+    lower.endsWith(".htm") ||
+    lower.endsWith(".svg")
+  ) {
     return "html";
   }
 

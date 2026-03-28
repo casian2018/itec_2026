@@ -12,6 +12,7 @@ import {
 
 const SUPPORTED_IMPORT_EXTENSIONS = new Set([
   ".js",
+  ".jsx",
   ".mjs",
   ".cjs",
   ".ts",
@@ -30,7 +31,39 @@ const SUPPORTED_IMPORT_EXTENSIONS = new Set([
   ".json",
   ".md",
   ".markdown",
+  ".svg",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".yml",
+  ".yaml",
+  ".toml",
   ".txt",
+]);
+
+const SUPPORTED_IMPORT_FILENAMES = new Set([
+  "dockerfile",
+  "makefile",
+  ".env",
+  ".env.example",
+  ".env.local",
+  ".gitignore",
+  ".dockerignore",
+  ".editorconfig",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierrc",
+  ".prettierignore",
+  ".eslintrc",
+  ".eslintignore",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "compose.yml",
+  "compose.yaml",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "license",
 ]);
 
 const IGNORED_PATH_SEGMENTS = new Set([
@@ -49,7 +82,7 @@ const IGNORED_PATH_SEGMENTS = new Set([
 ]);
 
 export const MAX_PROJECT_IMPORT_ENTRIES = 600;
-export const MAX_PROJECT_IMPORT_TEXT_BYTES = 4 * 1024 * 1024;
+export const MAX_PROJECT_IMPORT_TEXT_BYTES = 16 * 1024 * 1024;
 
 export type ProjectImportWarning = {
   path: string;
@@ -137,7 +170,10 @@ function isIgnoredArchivePath(path: string) {
 }
 
 function isSupportedImportPath(path: string) {
-  return SUPPORTED_IMPORT_EXTENSIONS.has(extensionFor(path));
+  return (
+    SUPPORTED_IMPORT_EXTENSIONS.has(extensionFor(path)) ||
+    SUPPORTED_IMPORT_FILENAMES.has(basenameFor(path).toLowerCase())
+  );
 }
 
 function pushWarning(

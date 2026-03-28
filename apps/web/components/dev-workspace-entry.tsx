@@ -108,6 +108,10 @@ export function DevWorkspaceEntry({ sessionCode }: { sessionCode?: string }) {
       "Hackathon User",
     [profile?.username, user?.displayName, user?.email],
   );
+  const currentUserId = useMemo(
+    () => profile?.uid || user?.uid || `guest-${displayName}`,
+    [displayName, profile?.uid, user?.uid],
+  );
 
   useEffect(() => {
     if (!sessionCode) {
@@ -312,6 +316,7 @@ export function DevWorkspaceEntry({ sessionCode }: { sessionCode?: string }) {
       <WorkspaceShell
         roomId={sessionLookup?.roomId ?? normalizedSessionCode}
         currentUserName={displayName}
+        currentUserId={currentUserId}
       />
     </div>
   );

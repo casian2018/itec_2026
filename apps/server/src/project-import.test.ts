@@ -46,3 +46,32 @@ test("skips unsupported and unsafe archive entries", async () => {
     ),
   );
 });
+
+test("imports common project files used by real web repositories", async () => {
+  const archive = new JSZip();
+  archive.file("src/App.jsx", "export default function App() { return <main>Hello</main>; }\n");
+  archive.file("Dockerfile", "FROM node:20-alpine\n");
+  archive.file(".env", "VITE_API_URL=http://localhost:4000\n");
+  archive.file("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+
+  const result = await importWorkspaceFromZipBuffer(
+    await archive.generateAsync({ type: "nodebuffer" }),
+  );
+
+  assert.equal(result.summary.importedFileCount, 4);
+  assert.ok(
+    result.workspace.nodes.some(
+      (node) => node.kind === "file" && node.path === "src/App.jsx",
+    ),
+  );
+  assert.ok(
+    result.workspace.nodes.some(
+      (node) => node.kind === "file" && node.path === "Dockerfile",
+    ),
+  );
+  assert.ok(
+    result.workspace.nodes.some(
+      (node) => node.kind === "file" && node.path === ".env",
+    ),
+  );
+});

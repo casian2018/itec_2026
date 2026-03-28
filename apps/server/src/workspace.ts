@@ -1,5 +1,6 @@
 import prettier from "prettier";
 import type {
+  AiEditLineChange,
   ExecutionRuntime,
   WorkspaceFileLanguage,
   WorkspaceFileNode,
@@ -565,6 +566,100 @@ export function updateWorkspaceFileContent(
   };
 }
 
+export function applyApprovedLineChangesToWorkspaceFile(
+  workspace: WorkspaceState,
+  fileId: string,
+  baseContent: string,
+  changes: AiEditLineChange[],
+) {
+  const currentFile = getWorkspaceFile(workspace, fileId);
+
+  if (!currentFile) {
+    return {
+      workspace,
+      changed: false,
+      file: null,
+      error: "The target file no longer exists in this workspace.",
+    };
+  }
+
+  const normalizedBaseContent = baseContent.replace(/\r\n/g, "\n");
+  const normalizedCurrentContent = currentFile.content.replace(/\r\n/g, "\n");
+
+  if (normalizedCurrentContent !== normalizedBaseContent) {
+    return {
+      workspace,
+      changed: false,
+      file: currentFile,
+      error:
+        "The file changed after the AI proposal was generated. Ask AI again on the latest file version.",
+    };
+  }
+
+  const approvedChanges = changes.filter((change) => change.status === "approved");
+
+  if (approvedChanges.length === 0) {
+    return {
+      workspace,
+      changed: false,
+      file: currentFile,
+      error: "Approve at least one proposed line change before applying it.",
+    };
+  }
+
+  const lines =
+    normalizedBaseContent.length > 0 ? normalizedBaseContent.split("\n") : [];
+  let lineOffset = 0;
+
+  for (const change of approvedChanges) {
+    if (change.type === "insert") {
+      const insertionIndex = Math.max(
+        0,
+        Math.min(lines.length, change.lineNumber - 1 + lineOffset),
+      );
+      const insertedLines =
+        change.newText.length > 0 ? change.newText.replace(/\r\n/g, "\n").split("\n") : [""];
+
+      lines.splice(insertionIndex, 0, ...insertedLines);
+      lineOffset += insertedLines.length;
+      continue;
+    }
+
+    const targetIndex = change.lineNumber - 1 + lineOffset;
+
+    if (targetIndex < 0 || targetIndex >= lines.length) {
+      return {
+        workspace,
+        changed: false,
+        file: currentFile,
+        error: `AI change for line ${change.lineNumber} is no longer valid.`,
+      };
+    }
+
+    if (change.type === "delete") {
+      lines.splice(targetIndex, 1);
+      lineOffset -= 1;
+      continue;
+    }
+
+    const replacementLines =
+      change.newText.length > 0 ? change.newText.replace(/\r\n/g, "\n").split("\n") : [""];
+
+    lines.splice(targetIndex, 1, ...replacementLines);
+    lineOffset += replacementLines.length - 1;
+  }
+
+  const nextContent = lines.join("\n");
+  const updateResult = updateWorkspaceFileContent(workspace, fileId, nextContent);
+
+  return {
+    workspace: updateResult.workspace,
+    changed: updateResult.changed,
+    file: updateResult.file,
+    error: null,
+  };
+}
+
 export function updateWorkspaceView(
   workspace: WorkspaceState,
   activeFileId: string,
@@ -686,7 +781,12 @@ export function inferLanguageFromExtension(
 ): WorkspaceFileLanguage {
   const lower = filename.toLowerCase();
 
-  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+  if (
+    lower.endsWith(".js") ||
+    lower.endsWith(".jsx") ||
+    lower.endsWith(".mjs") ||
+    lower.endsWith(".cjs")
+  ) {
     return "javascript";
   }
 
@@ -702,7 +802,11 @@ export function inferLanguageFromExtension(
     return "c";
   }
 
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+  if (
+    lower.endsWith(".html") ||
+    lower.endsWith(".htm") ||
+    lower.endsWith(".svg")
+  ) {
     return "html";
   }
 

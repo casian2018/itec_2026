@@ -4,6 +4,7 @@ import { socketUrl } from "./env";
 export type Participant = {
   socketId: string;
   name: string;
+  userId?: string;
 };
 
 export type CursorPosition = {
@@ -63,16 +64,65 @@ export type WorkspaceUiState = {
 };
 
 export type AiBlockStatus = "pending" | "accepted" | "rejected";
+export type AiSuggestionMode = "assist" | "next-line" | "optimize";
+export type AiBlockApplyMode = "insert" | "replace";
 
 export type AiBlock = {
   id: string;
   roomId: string;
   fileId: string;
+  mode: AiSuggestionMode;
+  applyMode: AiBlockApplyMode;
   code: string;
   explanation?: string;
   insertAfterLine: number;
   status: AiBlockStatus;
   createdAt: string;
+};
+
+export type AiEditChangeType = "insert" | "replace" | "delete";
+export type AiEditChangeStatus = "pending" | "approved" | "rejected";
+export type AiEditProposalStatus = "pending" | "applied" | "discarded";
+
+export type AiEditLineChange = {
+  id: string;
+  type: AiEditChangeType;
+  lineNumber: number;
+  oldText: string;
+  newText: string;
+  summary: string;
+  status: AiEditChangeStatus;
+};
+
+export type AiEditProposal = {
+  id: string;
+  roomId: string;
+  fileId: string;
+  filePath: string;
+  requesterUserId: string;
+  requesterName: string;
+  prompt: string;
+  explanation: string;
+  baseContent: string;
+  status: AiEditProposalStatus;
+  changes: AiEditLineChange[];
+  createdAt: string;
+  appliedAt?: string | null;
+};
+
+export type ChatChannel = "shared" | "private";
+export type ChatAuthorType = "user" | "ai" | "system";
+
+export type ChatMessage = {
+  id: string;
+  roomId: string;
+  channel: ChatChannel;
+  authorType: ChatAuthorType;
+  authorName: string;
+  content: string;
+  createdAt: string;
+  userId?: string;
+  fileId?: string | null;
 };
 
 export type RoomSnapshot = {
@@ -130,7 +180,7 @@ export type RunDonePayload = {
 };
 
 type ClientToServerEvents = {
-  "room:join": (payload: { roomId: string; name: string }) => void;
+  "room:join": (payload: { roomId: string; name: string; userId?: string }) => void;
   "workspace:file:update": (payload: {
     roomId: string;
     fileId: string;
@@ -201,6 +251,26 @@ type ClientToServerEvents = {
     rows: number;
   }) => void;
   "terminal:clear": (payload: { roomId: string }) => void;
+  "chat:shared:send": (payload: { roomId: string; content: string }) => void;
+  "chat:private:send": (payload: {
+    roomId: string;
+    fileId: string;
+    content: string;
+  }) => void;
+  "ai:proposal:approve-line": (payload: {
+    roomId: string;
+    proposalId: string;
+    changeId: string;
+  }) => void;
+  "ai:proposal:reject-line": (payload: {
+    roomId: string;
+    proposalId: string;
+    changeId: string;
+  }) => void;
+  "ai:proposal:apply": (payload: {
+    roomId: string;
+    proposalId: string;
+  }) => void;
   "cursor:update": (payload: {
     roomId: string;
     fileId: string;
@@ -211,6 +281,8 @@ type ClientToServerEvents = {
     fileId: string;
     prompt: string;
     code: string;
+    mode?: AiSuggestionMode;
+    cursorLine?: number | null;
   }) => void;
   "ai:block:accept": (payload: { roomId: string; blockId: string }) => void;
   "ai:block:reject": (payload: { roomId: string; blockId: string }) => void;
@@ -252,6 +324,23 @@ type ServerToClientEvents = {
   "cursor:cleared": (payload: { socketId: string }) => void;
   "run:output": (payload: RunOutputPayload) => void;
   "run:done": (payload: RunDonePayload) => void;
+  "chat:shared:init": (payload: {
+    roomId: string;
+    messages: ChatMessage[];
+  }) => void;
+  "chat:shared:message": (payload: { message: ChatMessage }) => void;
+  "chat:private:init": (payload: {
+    roomId: string;
+    messages: ChatMessage[];
+  }) => void;
+  "chat:private:message": (payload: { message: ChatMessage }) => void;
+  "ai:proposal:init": (payload: {
+    roomId: string;
+    proposals: AiEditProposal[];
+  }) => void;
+  "ai:proposal:created": (payload: { proposal: AiEditProposal }) => void;
+  "ai:proposal:updated": (payload: { proposal: AiEditProposal }) => void;
+  "ai:proposal:error": (payload: { roomId: string; message: string }) => void;
   "ai:block:created": (payload: { block: AiBlock }) => void;
   "ai:block:updated": (payload: { block: AiBlock }) => void;
   "ai:block:error": (payload: { roomId: string; message: string }) => void;
