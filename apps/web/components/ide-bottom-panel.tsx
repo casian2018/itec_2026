@@ -11,9 +11,12 @@ type BottomPanelTab = "terminal" | "output" | "timeline";
 type IdeBottomPanelProps = {
   activeTab: BottomPanelTab;
   onSelectTab: (tab: BottomPanelTab) => void;
+  roomId: string;
   terminalEntries: TerminalEntry[];
-  canSubmitTerminal: boolean;
-  onSubmitTerminal: (command: string) => void;
+  canInteractTerminal: boolean;
+  onInputTerminal: (data: string) => void;
+  onResizeTerminal: (cols: number, rows: number) => void;
+  onClearTerminal: () => void;
   consoleEntries: ConsoleEntry[];
   consoleStatus: RunCodeStatus;
   snapshots: RoomSnapshot[];
@@ -35,9 +38,12 @@ function tabButtonClasses(active: boolean) {
 export function IdeBottomPanel({
   activeTab,
   onSelectTab,
+  roomId,
   terminalEntries,
-  canSubmitTerminal,
-  onSubmitTerminal,
+  canInteractTerminal,
+  onInputTerminal,
+  onResizeTerminal,
+  onClearTerminal,
   consoleEntries,
   consoleStatus,
   snapshots,
@@ -89,9 +95,12 @@ export function IdeBottomPanel({
       <div className="min-h-0 flex-1">
         {activeTab === "terminal" ? (
           <SharedTerminalPanel
+            roomId={roomId}
             entries={terminalEntries}
-            canSubmit={canSubmitTerminal}
-            onSubmit={onSubmitTerminal}
+            canInteract={canInteractTerminal}
+            onInput={onInputTerminal}
+            onResize={onResizeTerminal}
+            onClear={onClearTerminal}
           />
         ) : null}
 

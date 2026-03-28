@@ -5,6 +5,7 @@ import type { AiBlock } from "@/lib/socket";
 type AiSuggestionsPanelProps = {
   blocks: AiBlock[];
   isLoading: boolean;
+  errorMessage?: string | null;
   onAccept: (blockId: string) => void;
   onReject: (blockId: string) => void;
 };
@@ -53,15 +54,15 @@ function EmptyState() {
         </p>
       </div>
       <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-        Ask AI to generate the first review block for this shared file. New
-        suggestions will appear here for everyone in the room.
+        Ask Gemini to generate the first review block for this shared file. New
+        suggestions will appear here for everyone in the current session.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
-          Mocked for demo
+          Gemini powered
         </span>
         <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
-          Shared with room
+          Shared with session
         </span>
       </div>
     </div>
@@ -71,6 +72,7 @@ function EmptyState() {
 export function AiSuggestionsPanel({
   blocks,
   isLoading,
+  errorMessage,
   onAccept,
   onReject,
 }: AiSuggestionsPanelProps) {
@@ -81,11 +83,20 @@ export function AiSuggestionsPanel({
           AI Suggestions
         </h2>
         <p className="mt-2 max-w-sm text-[12px] leading-5 text-[var(--text-muted)]">
-          Mocked AI blocks for review before any editor insertion happens.
+          Gemini generates reviewable code blocks before anything gets inserted into the editor.
         </p>
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+        {errorMessage ? (
+          <div className="border border-rose-400/18 bg-rose-400/10 p-4">
+            <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-rose-200">
+              AI Request Failed
+            </p>
+            <p className="mt-3 text-sm leading-6 text-rose-100">{errorMessage}</p>
+          </div>
+        ) : null}
+
         {isLoading ? (
           <div className="border border-[rgba(82,199,184,0.16)] bg-[var(--accent-soft)] p-4">
             <div className="flex items-center gap-2">
@@ -95,7 +106,7 @@ export function AiSuggestionsPanel({
               </p>
             </div>
             <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-              Reviewing the current editor snapshot and preparing a room-shared
+              Reviewing the current editor snapshot and preparing a session-shared
               suggestion block.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -103,7 +114,7 @@ export function AiSuggestionsPanel({
                 Reading code
               </span>
               <span className="border border-[var(--accent-line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--accent)]">
-                Drafting suggestion
+                Gemini generating
               </span>
             </div>
           </div>
@@ -187,7 +198,7 @@ export function AiSuggestionsPanel({
 
                 <div className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2">
                   <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Room
+                    Session
                   </p>
                   <p className="mt-1 font-mono text-xs text-[var(--text-secondary)]">
                     {block.roomId}

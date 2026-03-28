@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
 
 :root {
   --bg: #07101c;
@@ -189,16 +190,23 @@
   box-sizing: border-box;
 }
 
-html {
+html,
+body {
+  height: 100%;
+  overflow: hidden;
   background: #111111;
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100%;
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-space-grotesk), sans-serif;
   text-rendering: optimizeLegibility;
+}
+
+body > * {
+  min-height: 100%;
 }
 
 a {

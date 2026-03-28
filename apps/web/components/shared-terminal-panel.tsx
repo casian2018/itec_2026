@@ -1,108 +1,202 @@
 "use client";
 
-import { useState } from "react";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { useEffect, useMemo, useRef } from "react";
 import type { TerminalEntry } from "@/lib/socket";
-import { TerminalSurface } from "./terminal-surface";
 
 type SharedTerminalPanelProps = {
+  roomId: string;
   entries: TerminalEntry[];
-  canSubmit: boolean;
-  onSubmit: (command: string) => void;
+  canInteract: boolean;
+  onInput: (data: string) => void;
+  onResize: (cols: number, rows: number) => void;
+  onClear: () => void;
 };
 
-const SUGGESTED_COMMANDS = ["help", "status", "participants", "snapshots"];
+function renderTerminalEntry(entry: TerminalEntry) {
+  if (entry.kind === "system") {
+    return `\r\n\x1b[36m${entry.text}\x1b[0m\r\n`;
+  }
+
+  if (entry.kind === "stderr") {
+    return `\x1b[31m${entry.text}\x1b[0m`;
+  }
+
+  if (entry.kind === "command") {
+    return `\x1b[38;5;81m${entry.text}\x1b[0m`;
+  }
+
+  return entry.text;
+}
 
 export function SharedTerminalPanel({
+  roomId,
   entries,
-  canSubmit,
-  onSubmit,
+  canInteract,
+  onInput,
+  onResize,
+  onClear,
 }: SharedTerminalPanelProps) {
-  const [command, setCommand] = useState("");
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const renderedEntryIdsRef = useRef<string[]>([]);
+  const canInteractRef = useRef(canInteract);
+  const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const sessionLabel = useMemo(() => roomId.toUpperCase(), [roomId]);
 
-    const nextCommand = command.trim();
+  useEffect(() => {
+    canInteractRef.current = canInteract;
+    onInputRef.current = onInput;
+    onResizeRef.current = onResize;
+  }, [canInteract, onInput, onResize]);
 
-    if (!nextCommand || !canSubmit) {
+  useEffect(() => {
+    const container = terminalContainerRef.current;
+
+    if (!container) {
       return;
     }
 
-    onSubmit(nextCommand);
-    setCommand("");
-  }
+    const terminal = new Terminal({
+      convertEol: false,
+      cursorBlink: true,
+      scrollback: 4000,
+      fontFamily: "var(--font-ibm-plex-mono)",
+      fontSize: 13,
+      lineHeight: 1.35,
+      theme: {
+        background: "#1e1e1e",
+        foreground: "#d4d4d4",
+        cursor: "#d4d4d4",
+        cursorAccent: "#1e1e1e",
+        selectionBackground: "rgba(38, 79, 120, 0.55)",
+        black: "#000000",
+        red: "#f14c4c",
+        green: "#23d18b",
+        yellow: "#f5f543",
+        blue: "#3b8eea",
+        magenta: "#d670d6",
+        cyan: "#29b8db",
+        white: "#e5e5e5",
+        brightBlack: "#666666",
+        brightRed: "#f14c4c",
+        brightGreen: "#23d18b",
+        brightYellow: "#f5f543",
+        brightBlue: "#3b8eea",
+        brightMagenta: "#d670d6",
+        brightCyan: "#29b8db",
+        brightWhite: "#e5e5e5",
+      },
+    });
+    const fitAddon = new FitAddon();
+
+    terminal.loadAddon(fitAddon);
+    terminal.open(container);
+    fitAddon.fit();
+    onResizeRef.current(terminal.cols, terminal.rows);
+
+    const disposeData = terminal.onData((data) => {
+      if (!canInteractRef.current) {
+        return;
+      }
+
+      onInputRef.current(data);
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      fitAddon.fit();
+      onResizeRef.current(terminal.cols, terminal.rows);
+    });
+
+    resizeObserver.observe(container);
+
+    terminalRef.current = terminal;
+
+    return () => {
+      resizeObserver.disconnect();
+      disposeData.dispose();
+      terminal.dispose();
+      terminalRef.current = null;
+      renderedEntryIdsRef.current = [];
+    };
+  }, [roomId]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+
+    if (!terminal) {
+      return;
+    }
+
+    terminal.options.disableStdin = !canInteract;
+  }, [canInteract]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+
+    if (!terminal) {
+      return;
+    }
+
+    const previousIds = renderedEntryIdsRef.current;
+    const nextIds = entries.map((entry) => entry.id);
+    const canAppendIncrementally =
+      previousIds.length <= nextIds.length &&
+      previousIds.every((id, index) => nextIds[index] === id);
+
+    if (!canAppendIncrementally) {
+      terminal.reset();
+
+      for (const entry of entries) {
+        terminal.write(renderTerminalEntry(entry));
+      }
+    } else {
+      for (const entry of entries.slice(previousIds.length)) {
+        terminal.write(renderTerminalEntry(entry));
+      }
+    }
+
+    renderedEntryIdsRef.current = nextIds;
+  }, [entries]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-[var(--panel-bg)] p-3">
-      <div className="mb-3 border-b border-[var(--line)] pb-3">
-        <div className="flex items-center justify-between gap-3">
+    <section className="flex h-full min-h-0 flex-col bg-[var(--panel-bg)]">
+      <div className="mb-0 flex items-center justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
+        <div className="min-w-0">
           <h2 className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)]">
-            Shared Terminal
+            Integrated Terminal
           </h2>
-          <span className="border border-cyan-400/14 bg-cyan-400/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-300">
-            Demo Safe
-          </span>
+          <p className="mt-1 text-[12px] leading-5 text-[var(--text-muted)]">
+            Shared Linux-like terminal scoped to session {sessionLabel}. Click
+            inside the terminal and type.
+          </p>
         </div>
-        <p className="mt-2 max-w-sm text-[12px] leading-5 text-[var(--text-muted)]">
-          Controlled room commands only. Activity is broadcast to everyone in
-          the room.
-        </p>
+        <div className="flex items-center gap-2">
+          <span className="border border-cyan-400/14 bg-cyan-400/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-300">
+            {canInteract ? "Live PTY" : "Read Only"}
+          </span>
+          <button
+            type="button"
+            disabled={!canInteract}
+            onClick={onClear}
+            className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Clear
+          </button>
+        </div>
       </div>
-      <TerminalSurface
-        badgeLabel="Room Shell"
-        badgeTone="accent"
-        entries={entries.map((entry) => ({
-          id: entry.id,
-          kind: entry.kind,
-          text: entry.text,
-          meta:
-            entry.kind === "command" && entry.authorName
-              ? entry.authorName
-              : undefined,
-        }))}
-        emptyState={{
-          title: "No Terminal Activity Yet",
-          description:
-            "Try a safe command like help or status to demo shared room activity.",
-          chips: ["shared history", "stdout", "stderr"],
-        }}
-        footer={
-          <form onSubmit={handleSubmit}>
-            <div className="flex gap-2">
-              <div className="flex flex-1 items-center border border-[var(--line)] bg-[var(--surface-chip)] px-3">
-                <span className="mr-3 font-mono text-[12px] text-[var(--accent)]">$</span>
-                <input
-                  value={command}
-                  onChange={(event) => setCommand(event.target.value)}
-                  placeholder="help"
-                  disabled={!canSubmit}
-                  className="h-11 w-full bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] disabled:cursor-not-allowed"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={!canSubmit || command.trim().length === 0}
-                className="border border-[var(--accent-line)] bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-[var(--accent-contrast)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:brightness-100"
-              >
-                Send
-              </button>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {SUGGESTED_COMMANDS.map((suggestion) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  disabled={!canSubmit}
-                  onClick={() => setCommand(suggestion)}
-                  className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          </form>
-        }
-      />
+
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+        <div ref={terminalContainerRef} className="h-full w-full px-2 py-2" />
+        {!canInteract ? (
+          <div className="pointer-events-none absolute right-3 top-3 border border-amber-400/20 bg-amber-400/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-amber-300">
+            Reconnect to type
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

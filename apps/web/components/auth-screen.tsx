@@ -163,29 +163,29 @@ export function AuthScreen({ next }: { next?: string }) {
   }
 
   return (
-    <main className="min-h-screen p-4 lg:p-6">
-      <div className="mx-auto grid min-h-[calc(100vh-2rem)] max-w-[1320px] gap-6 lg:grid-cols-[minmax(0,1.08fr)_460px]">
+    <main className="h-full min-h-0 overflow-y-auto p-4 lg:p-6">
+      <div className="mx-auto grid min-h-full max-w-[1320px] gap-6 lg:grid-cols-[minmax(0,1.08fr)_460px]">
         <section className="relative hidden overflow-hidden rounded-[32px] border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] p-8 shadow-[0_36px_140px_rgba(0,0,0,0.34)] backdrop-blur-xl lg:flex lg:flex-col lg:justify-between">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(82,199,184,0.14),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.08),transparent_28%)]" />
 
-            <div className="relative">
-              <div className="flex items-center gap-3">
+          <div className="relative">
+            <div className="flex items-center gap-3">
               <span className="inline-flex rounded-full border border-[rgba(82,199,184,0.2)] bg-[rgba(82,199,184,0.08)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.34em] text-[var(--accent)]">
                 iTECify
               </span>
               <span className="rounded-full border border-amber-400/12 bg-amber-400/10 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-amber-300">
                 Demo Auth
               </span>
-              </div>
-              <h1 className="mt-6 max-w-xl text-5xl font-semibold tracking-[-0.05em] text-white">
-              Enter the collaborative browser IDE.
-              </h1>
-              <p className="mt-5 max-w-xl text-base leading-7 text-[var(--text-muted)]">
-              This route acts as lightweight product entry. It captures a demo
-              identity, then hands off into the shared IDE workspace without
-              pretending to be production auth yet.
-              </p>
             </div>
+            <h1 className="mt-6 max-w-xl text-5xl font-semibold tracking-[-0.05em] text-white">
+              Enter the collaborative browser IDE.
+            </h1>
+            <p className="mt-5 max-w-xl text-base leading-7 text-[var(--text-muted)]">
+              This route acts as lightweight product entry. It captures a demo
+              identity, then hands off into the session-aware IDE workspace
+              without pretending to be production auth yet.
+            </p>
+          </div>
 
           <div className="relative grid gap-4 sm:grid-cols-3">
             {[
@@ -198,8 +198,8 @@ export function AuthScreen({ next }: { next?: string }) {
                 "No production auth yet. This stays simple for the demo while preserving a clean replacement point later.",
               ],
               [
-                "Room session",
-                "The same collaborative room, workspace sync, and execution flows continue once /dev opens.",
+                "Session-based IDE",
+                "After sign-in, /dev lets you create or join a session code so each group gets its own isolated collaborative workspace.",
               ],
             ].map(([title, detail]) => (
               <div
@@ -233,15 +233,15 @@ export function AuthScreen({ next }: { next?: string }) {
 
             <div className="mt-4 rounded-2xl border border-amber-400/12 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100">
               This is a lightweight entry screen for the demo. It creates a
-              local session only, then hands off into{" "}
-              <span className="font-mono">/dev</span> where the collaborative
-              IDE session starts.
+              local auth session only, then hands off into{" "}
+              <span className="font-mono">/dev</span> where you create or join
+              a collaborative coding session.
             </div>
 
             <div className="mt-4 rounded-2xl border border-[rgba(82,199,184,0.14)] bg-[rgba(82,199,184,0.08)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
-              You will enter the shared IDE as the username shown in your demo
-              session. The underlying room join flow stays simple for now and is
-              easy to replace later with real authentication.
+              Your identity is kept local for now. Once authenticated, the next
+              step is selecting a session code that isolates collaborators,
+              files, tabs, terminal activity, preview state, and execution.
             </div>
 
             <div className="mt-4 flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-white/[0.03] p-1">
@@ -275,8 +275,8 @@ export function AuthScreen({ next }: { next?: string }) {
               </h2>
               <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
                 {mode === "login"
-                  ? "Use any valid email and password to continue into the shared /dev workspace."
-                  : "Pick the name collaborators should see once you enter the shared IDE room."}
+                  ? "Use any valid email and password to continue into /dev, then choose or join a coding session."
+                  : "Pick the name collaborators should see once you enter a coding session."}
               </p>
             </div>
 

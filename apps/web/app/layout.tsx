@@ -17,7 +17,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "iTECify | Collaborative Browser IDE",
   description:
-    "AI-native collaborative browser IDE with shared files, live preview, terminal output, and room-based execution.",
+    "AI-native collaborative browser IDE with session-isolated files, live preview, terminal output, and execution.",
 };
 
 export default function RootLayout({
@@ -30,7 +30,7 @@ export default function RootLayout({
       lang="en"
       className={`${spaceGrotesk.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-[var(--bg)] text-[var(--text-primary)]">
+      <body className="h-full overflow-hidden bg-[var(--bg)] text-[var(--text-primary)]">
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

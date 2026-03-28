@@ -1,3 +1,4 @@
+import prettier from "prettier";
 import type {
   ExecutionRuntime,
   WorkspaceFileLanguage,
@@ -110,6 +111,14 @@ int main() {
 }
 `;
 
+const DEFAULT_C = `#include <stdio.h>
+
+int main(void) {
+  printf("iTECify C workspace ready.\\n");
+  return 0;
+}
+`;
+
 const DEFAULT_README = `# iTECify Workspace
 
 This room now behaves like an in-memory IDE workspace.
@@ -167,6 +176,10 @@ export function executionRuntimeForLanguage(
     return "python";
   }
 
+  if (language === "c") {
+    return "c";
+  }
+
   if (language === "cpp") {
     return "cpp";
   }
@@ -174,7 +187,157 @@ export function executionRuntimeForLanguage(
   return undefined;
 }
 
+function getNode(workspace: WorkspaceState, nodeId: string) {
+  return workspace.nodes.find((node) => node.id === nodeId) ?? null;
+}
+
+function getFolderPath(workspace: WorkspaceState, folderId: string | null) {
+  if (!folderId) {
+    return "";
+  }
+
+  const folder = workspace.nodes.find(
+    (node) => node.id === folderId && node.kind === "folder",
+  );
+
+  return folder?.path ?? null;
+}
+
+function splitFileName(name: string) {
+  const dotIndex = name.lastIndexOf(".");
+
+  if (dotIndex <= 0) {
+    return {
+      baseName: name,
+      extension: "",
+    };
+  }
+
+  return {
+    baseName: name.slice(0, dotIndex),
+    extension: name.slice(dotIndex),
+  };
+}
+
+function siblingPath(parentPath: string, name: string) {
+  return parentPath ? `${parentPath}/${name}` : name;
+}
+
+function getUniqueName(
+  workspace: WorkspaceState,
+  parentId: string | null,
+  requestedName: string,
+) {
+  const parentPath = getFolderPath(workspace, parentId);
+
+  if (parentPath === null) {
+    return null;
+  }
+
+  const { baseName, extension } = splitFileName(requestedName);
+  let candidate = requestedName;
+  let counter = 1;
+
+  while (
+    workspace.nodes.some(
+      (node) => node.path === siblingPath(parentPath, candidate),
+    )
+  ) {
+    candidate =
+      extension.length > 0
+        ? `${baseName}-copy${counter > 1 ? `-${counter}` : ""}${extension}`
+        : `${baseName}-copy${counter > 1 ? `-${counter}` : ""}`;
+    counter += 1;
+  }
+
+  return candidate;
+}
+
+function sortNodes(nodes: WorkspaceNode[]) {
+  return [...nodes].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function normalizeTextContent(content: string) {
+  return content
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+$/g, ""))
+    .join("\n")
+    .trimEnd();
+}
+
+function prettierParserForLanguage(language: WorkspaceFileLanguage) {
+  if (language === "javascript") {
+    return "babel";
+  }
+
+  if (language === "typescript") {
+    return "typescript";
+  }
+
+  if (language === "html") {
+    return "html";
+  }
+
+  if (language === "css") {
+    return "css";
+  }
+
+  if (language === "json") {
+    return "json";
+  }
+
+  if (language === "markdown") {
+    return "markdown";
+  }
+
+  return null;
+}
+
+async function formatWorkspaceFileContent(
+  language: WorkspaceFileLanguage,
+  content: string,
+) {
+  const normalized = normalizeTextContent(content);
+  const parser = prettierParserForLanguage(language);
+
+  if (!parser) {
+    throw new Error(
+      `Formatting is not supported yet for ${language} files in this MVP.`,
+    );
+  }
+
+  if (!normalized) {
+    return "";
+  }
+
+  return prettier.format(normalized, {
+    parser,
+    printWidth: 80,
+    tabWidth: 2,
+    singleQuote: false,
+    trailingComma: "all",
+    semi: true,
+  });
+}
+
+function isDescendantPath(path: string, candidateParentPath: string) {
+  return candidateParentPath === path || candidateParentPath.startsWith(`${path}/`);
+}
+
+export function createEmptyWorkspace(): WorkspaceState {
+  return {
+    nodes: [],
+    activeFileId: "",
+    openFileIds: [],
+  };
+}
+
 export function createDefaultWorkspace(): WorkspaceState {
+  return createEmptyWorkspace();
+}
+
+export function createLegacyDemoWorkspace(): WorkspaceState {
   const nodes: WorkspaceNode[] = [
     createFolder("folder-src", "src", null, "src"),
     createFolder("folder-public", "public", null, "public"),
@@ -195,6 +358,15 @@ export function createDefaultWorkspace(): WorkspaceState {
       "python",
       DEFAULT_PYTHON,
       "python",
+    ),
+    createFile(
+      "file-c-entry",
+      "main.c",
+      "folder-src",
+      "src/main.c",
+      "c",
+      DEFAULT_C,
+      "c",
     ),
     createFile(
       "file-cpp-entry",
@@ -277,6 +449,73 @@ export function listWorkspaceFiles(workspace: WorkspaceState) {
   );
 }
 
+function getWorkspaceFileByPath(
+  workspace: WorkspaceState,
+  path: string,
+): WorkspaceFileNode | null {
+  const normalizedPath = path.trim().toLowerCase();
+
+  return (
+    listWorkspaceFiles(workspace).find(
+      (file) => file.path.toLowerCase() === normalizedPath,
+    ) ?? null
+  );
+}
+
+function preferredPreviewFile(
+  workspace: WorkspaceState,
+  candidates: string[],
+): WorkspaceFileNode | null {
+  for (const candidate of candidates) {
+    const file = getWorkspaceFileByPath(workspace, candidate);
+
+    if (file) {
+      return file;
+    }
+  }
+
+  return null;
+}
+
+export function getPreviewFiles(workspace: WorkspaceState) {
+  const htmlFile =
+    preferredPreviewFile(workspace, ["public/index.html", "index.html"]) ??
+    listWorkspaceFiles(workspace).find((file) => file.language === "html") ??
+    null;
+  const cssFile =
+    preferredPreviewFile(workspace, [
+      "public/style.css",
+      "public/styles.css",
+      "style.css",
+      "styles.css",
+    ]) ??
+    listWorkspaceFiles(workspace).find((file) => file.language === "css") ??
+    null;
+  const jsFile =
+    preferredPreviewFile(workspace, [
+      "public/script.js",
+      "public/index.js",
+      "script.js",
+      "index.js",
+    ]) ??
+    null;
+
+  return {
+    htmlFile,
+    cssFile,
+    jsFile,
+  };
+}
+
+export function isPreviewWorkspaceFile(
+  workspace: WorkspaceState,
+  fileId: string,
+) {
+  const { htmlFile, cssFile, jsFile } = getPreviewFiles(workspace);
+
+  return [htmlFile, cssFile, jsFile].some((file) => file?.id === fileId);
+}
+
 function normalizeOpenFileIds(workspace: WorkspaceState, openFileIds: string[]) {
   const validFileIds = new Set(listWorkspaceFiles(workspace).map((file) => file.id));
   const uniqueOpenFileIds: string[] = [];
@@ -335,7 +574,7 @@ export function updateWorkspaceView(
   const normalizedOpenFileIds = normalizeOpenFileIds(workspace, openFileIds);
   const nextActiveFileId = validFileIds.includes(activeFileId)
     ? activeFileId
-    : validFileIds[0] ?? workspace.activeFileId;
+    : normalizedOpenFileIds[0] ?? "";
 
   if (
     nextActiveFileId &&
@@ -440,4 +679,438 @@ export function insertCodeIntoWorkspaceFile(
   ].join("\n");
 
   return updateWorkspaceFileContent(workspace, fileId, nextContent);
+}
+
+export function inferLanguageFromExtension(
+  filename: string,
+): WorkspaceFileLanguage {
+  const lower = filename.toLowerCase();
+
+  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+    return "javascript";
+  }
+
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) {
+    return "typescript";
+  }
+
+  if (lower.endsWith(".py")) {
+    return "python";
+  }
+
+  if (lower.endsWith(".c") || lower.endsWith(".h")) {
+    return "c";
+  }
+
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+    return "html";
+  }
+
+  if (lower.endsWith(".css") || lower.endsWith(".scss")) {
+    return "css";
+  }
+
+  if (
+    lower.endsWith(".cpp") ||
+    lower.endsWith(".cc") ||
+    lower.endsWith(".cxx") ||
+    lower.endsWith(".hpp")
+  ) {
+    return "cpp";
+  }
+
+  if (lower.endsWith(".json")) {
+    return "json";
+  }
+
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) {
+    return "markdown";
+  }
+
+  return "plaintext";
+}
+
+function generateId(prefix: string) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function createWorkspaceFile(
+  workspace: WorkspaceState,
+  parentId: string | null,
+  name: string,
+) {
+  const trimmedName = name.trim();
+
+  if (!trimmedName) {
+    return { workspace, changed: false, file: null };
+  }
+
+  const parentPath = getFolderPath(workspace, parentId);
+
+  if (parentPath === null) {
+    return { workspace, changed: false, file: null };
+  }
+
+  const path = siblingPath(parentPath, trimmedName);
+  const existing = workspace.nodes.find((n) => n.path === path);
+
+  if (existing) {
+    return { workspace, changed: false, file: null };
+  }
+
+  const language = inferLanguageFromExtension(trimmedName);
+  const runtime = executionRuntimeForLanguage(language);
+  const id = generateId("file");
+
+  const file = createFile(id, trimmedName, parentId, path, language, "", runtime);
+
+  return {
+    workspace: {
+      ...workspace,
+      nodes: sortNodes([...workspace.nodes, file]),
+      activeFileId: file.id,
+      openFileIds: [...workspace.openFileIds.filter((id) => id !== file.id), file.id],
+    },
+    changed: true,
+    file,
+  };
+}
+
+export function createWorkspaceFolder(
+  workspace: WorkspaceState,
+  parentId: string | null,
+  name: string,
+) {
+  const trimmedName = name.trim();
+
+  if (!trimmedName) {
+    return { workspace, changed: false, folder: null };
+  }
+
+  const parentPath = getFolderPath(workspace, parentId);
+
+  if (parentPath === null) {
+    return { workspace, changed: false, folder: null };
+  }
+
+  const path = siblingPath(parentPath, trimmedName);
+  const existing = workspace.nodes.find((n) => n.path === path);
+
+  if (existing) {
+    return { workspace, changed: false, folder: null };
+  }
+
+  const id = generateId("folder");
+  const folder = createFolder(id, trimmedName, parentId, path);
+
+  return {
+    workspace: {
+      ...workspace,
+      nodes: sortNodes([...workspace.nodes, folder]),
+    },
+    changed: true,
+    folder,
+  };
+}
+
+export function renameWorkspaceNode(
+  workspace: WorkspaceState,
+  nodeId: string,
+  newName: string,
+) {
+  const trimmedName = newName.trim();
+
+  if (!trimmedName) {
+    return { workspace, changed: false, node: null };
+  }
+
+  const node = workspace.nodes.find((n) => n.id === nodeId);
+
+  if (!node) {
+    return { workspace, changed: false, node: null };
+  }
+
+  const oldPath = node.path;
+  const parentPath = getFolderPath(workspace, node.parentId);
+
+  if (parentPath === null) {
+    return { workspace, changed: false, node: null };
+  }
+
+  const newPath = siblingPath(parentPath, trimmedName);
+  const existing = workspace.nodes.find(
+    (n) => n.id !== nodeId && n.path === newPath,
+  );
+
+  if (existing) {
+    return { workspace, changed: false, node: null };
+  }
+
+  const pathPrefix = oldPath;
+  const nextNodes = workspace.nodes.map((n) => {
+    if (n.id === nodeId) {
+      const updated = { ...n, name: trimmedName, path: newPath };
+
+      if (updated.kind === "file") {
+        const newLang = inferLanguageFromExtension(trimmedName);
+        (updated as WorkspaceFileNode).language = newLang;
+        (updated as WorkspaceFileNode).executionRuntime =
+          executionRuntimeForLanguage(newLang);
+      }
+
+      return updated;
+    }
+
+    if (n.path.startsWith(`${pathPrefix}/`)) {
+      return { ...n, path: n.path.replace(pathPrefix, newPath) };
+    }
+
+    return n;
+  });
+
+  const renamedNode = nextNodes.find((n) => n.id === nodeId) ?? null;
+
+  let nextActiveFileId = workspace.activeFileId;
+  let nextOpenFileIds = workspace.openFileIds;
+
+  if (node.kind === "file") {
+    nextOpenFileIds = workspace.openFileIds.map((id) =>
+      id === nodeId ? nodeId : id,
+    );
+  }
+
+  return {
+    workspace: {
+      ...workspace,
+      nodes: sortNodes(nextNodes),
+      activeFileId: nextActiveFileId,
+      openFileIds: nextOpenFileIds,
+    },
+    changed: true,
+    node: renamedNode,
+  };
+}
+
+export function deleteWorkspaceNode(
+  workspace: WorkspaceState,
+  nodeId: string,
+) {
+  const node = workspace.nodes.find((n) => n.id === nodeId);
+
+  if (!node) {
+    return { workspace, changed: false };
+  }
+
+  const idsToDelete = new Set<string>([nodeId]);
+
+  if (node.kind === "folder") {
+    for (const n of workspace.nodes) {
+      if (n.path.startsWith(`${node.path}/`)) {
+        idsToDelete.add(n.id);
+      }
+    }
+  }
+
+  const nextNodes = workspace.nodes.filter((n) => !idsToDelete.has(n.id));
+  const deletedFileIds = new Set(
+    workspace.nodes
+      .filter((n) => idsToDelete.has(n.id) && n.kind === "file")
+      .map((n) => n.id),
+  );
+
+  let nextActiveFileId = workspace.activeFileId;
+  let nextOpenFileIds = workspace.openFileIds.filter(
+    (id) => !deletedFileIds.has(id),
+  );
+
+  if (deletedFileIds.has(nextActiveFileId)) {
+    const activeIndex = workspace.openFileIds.indexOf(nextActiveFileId);
+    nextActiveFileId =
+      nextOpenFileIds[activeIndex] ??
+      nextOpenFileIds[activeIndex - 1] ??
+      nextOpenFileIds[0] ??
+      "";
+  }
+
+  return {
+    workspace: {
+      ...workspace,
+      nodes: nextNodes,
+      activeFileId: nextActiveFileId,
+      openFileIds: nextOpenFileIds,
+    },
+    changed: true,
+  };
+}
+
+export function duplicateWorkspaceFile(
+  workspace: WorkspaceState,
+  nodeId: string,
+) {
+  const node = getNode(workspace, nodeId);
+
+  if (!node || node.kind !== "file") {
+    return { workspace, changed: false, file: null };
+  }
+
+  const uniqueName = getUniqueName(workspace, node.parentId, node.name);
+
+  if (!uniqueName) {
+    return { workspace, changed: false, file: null };
+  }
+
+  const parentPath = getFolderPath(workspace, node.parentId);
+
+  if (parentPath === null) {
+    return { workspace, changed: false, file: null };
+  }
+
+  const duplicate: WorkspaceFileNode = {
+    ...node,
+    id: generateId("file"),
+    name: uniqueName,
+    path: siblingPath(parentPath, uniqueName),
+  };
+
+  return {
+    workspace: {
+      ...workspace,
+      nodes: sortNodes([...workspace.nodes, duplicate]),
+      activeFileId: duplicate.id,
+      openFileIds: [...workspace.openFileIds.filter((id) => id !== duplicate.id), duplicate.id],
+    },
+    changed: true,
+    file: duplicate,
+  };
+}
+
+export function moveWorkspaceNode(
+  workspace: WorkspaceState,
+  nodeId: string,
+  targetParentId: string | null,
+) {
+  const node = getNode(workspace, nodeId);
+
+  if (!node) {
+    return { workspace, changed: false, node: null };
+  }
+
+  if (node.parentId === targetParentId) {
+    return { workspace, changed: false, node };
+  }
+
+  const targetParentPath = getFolderPath(workspace, targetParentId);
+
+  if (targetParentPath === null) {
+    return { workspace, changed: false, node: null };
+  }
+
+  if (node.kind === "folder" && targetParentPath && isDescendantPath(node.path, targetParentPath)) {
+    return { workspace, changed: false, node: null };
+  }
+
+  const nextPath = siblingPath(targetParentPath, node.name);
+
+  if (
+    workspace.nodes.some(
+      (currentNode) => currentNode.id !== node.id && currentNode.path === nextPath,
+    )
+  ) {
+    return { workspace, changed: false, node: null };
+  }
+
+  const nextNodes = workspace.nodes.map((currentNode) => {
+    if (currentNode.id === node.id) {
+      return {
+        ...currentNode,
+        parentId: targetParentId,
+        path: nextPath,
+      };
+    }
+
+    if (currentNode.path.startsWith(`${node.path}/`)) {
+      return {
+        ...currentNode,
+        path: currentNode.path.replace(node.path, nextPath),
+      };
+    }
+
+    return currentNode;
+  });
+
+  return {
+    workspace: {
+      ...workspace,
+      nodes: sortNodes(nextNodes),
+    },
+    changed: true,
+    node: nextNodes.find((currentNode) => currentNode.id === node.id) ?? null,
+  };
+}
+
+export async function formatWorkspaceFile(
+  workspace: WorkspaceState,
+  fileId: string,
+) {
+  const file = getWorkspaceFile(workspace, fileId);
+
+  if (!file) {
+    return {
+      workspace,
+      changed: false,
+      file: null,
+      error: "The selected file was not found in the workspace.",
+    };
+  }
+
+  try {
+    const formattedContent = await formatWorkspaceFileContent(
+      file.language,
+      file.content,
+    );
+
+    return {
+      ...updateWorkspaceFileContent(workspace, fileId, formattedContent),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      workspace,
+      changed: false,
+      file,
+      error:
+        error instanceof Error
+          ? error.message
+          : "The formatter failed for this file.",
+    };
+  }
+}
+
+export function closeWorkspaceTab(
+  workspace: WorkspaceState,
+  fileId: string,
+) {
+  if (!workspace.openFileIds.includes(fileId)) {
+    return { workspace, changed: false };
+  }
+
+  const closedTabIndex = workspace.openFileIds.indexOf(fileId);
+  const nextOpenFileIds = workspace.openFileIds.filter((id) => id !== fileId);
+  let nextActiveFileId = workspace.activeFileId;
+
+  if (workspace.activeFileId === fileId) {
+    nextActiveFileId =
+      nextOpenFileIds[closedTabIndex] ??
+      nextOpenFileIds[closedTabIndex - 1] ??
+      "";
+  }
+
+  return {
+    workspace: {
+      ...workspace,
+      activeFileId: nextActiveFileId,
+      openFileIds: nextOpenFileIds,
+    },
+    changed: true,
+  };
 }

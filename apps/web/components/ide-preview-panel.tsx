@@ -10,7 +10,7 @@ import {
 } from "@/lib/workspace";
 
 type IdePreviewPanelProps = {
-  activeFile: WorkspaceFileNode;
+  activeFile: WorkspaceFileNode | null;
   workspace: WorkspaceState;
   connectionLabel: string;
   participantCount: number;
@@ -39,7 +39,7 @@ function EmptyPreviewState() {
         {["index.html", "style.css", "script.js"].map((chip) => (
           <span
             key={chip}
-            className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]"
+            className="border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)] scale-50"
           >
             {chip}
           </span>
@@ -86,6 +86,23 @@ export function IdePreviewPanel({
   const folderCount = workspace.nodes.filter((node) => node.kind === "folder").length;
   const previewDocument = buildWorkspacePreviewDocument(workspace);
   const previewFiles = getPreviewFiles(workspace);
+  const activeFileLabel = activeFile?.name ?? "No file selected";
+
+  if (!activeFile) {
+    return (
+      <section className="flex h-full min-h-0 flex-col bg-[var(--sidebar-bg)] p-3">
+        <div className="border border-dashed border-[var(--line-strong)] bg-[var(--bg-panel-soft)] p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Preview Waiting For Files
+          </p>
+          <p className="mt-3 text-[13px] leading-6 text-[var(--text-secondary)]">
+            Upload a project ZIP or create files in this session before the live
+            preview can target HTML content.
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--sidebar-bg)] p-3">
@@ -122,7 +139,7 @@ export function IdePreviewPanel({
 
           <div className="grid gap-3 sm:grid-cols-2">
             {[
-              ["Active File", activeFile.name],
+              ["Active File", activeFileLabel],
               ["Connection", connectionLabel],
               ["Files", `${fileCount}`],
               ["Folders", `${folderCount}`],
@@ -169,7 +186,7 @@ export function IdePreviewPanel({
 
           <div className="grid gap-3 sm:grid-cols-2">
             {[
-              ["Active File", activeFile.name],
+              ["Active File", activeFileLabel],
               ["Connection", connectionLabel],
               ["Files", `${fileCount}`],
               ["Folders", `${folderCount}`],

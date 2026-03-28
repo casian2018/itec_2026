@@ -68,8 +68,16 @@ function languageLabel(language: string) {
     return "JavaScript";
   }
 
+  if (language === "typescript") {
+    return "TypeScript";
+  }
+
   if (language === "python") {
     return "Python";
+  }
+
+  if (language === "c") {
+    return "C";
   }
 
   if (language === "cpp") {

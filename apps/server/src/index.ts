@@ -1,16 +1,36 @@
 import cors from "cors";
 import express from "express";
 import { createServer } from "node:http";
+import multer from "multer";
 import { Server } from "socket.io";
-import { runDockerExecution } from "./execution-runner.js";
+import { generateGeminiSuggestion } from "./ai/gemini-codegen.js";
+import { createExecutionRunner } from "./execution/create-execution-runner.js";
+import { ExecutionRouter } from "./execution/execution-router.js";
+import { InMemoryExecutionState } from "./execution/in-memory-execution-state.js";
+import { CExecutionService } from "./execution/services/c-execution-service.js";
+import { CppExecutionService } from "./execution/services/cpp-execution-service.js";
+import { HtmlPreviewExecutionService } from "./execution/services/html-preview-execution-service.js";
+import { JavaScriptExecutionService } from "./execution/services/javascript-execution-service.js";
+import {
+  importWorkspaceFromZipBuffer,
+  MAX_PROJECT_IMPORT_ENTRIES,
+  MAX_PROJECT_IMPORT_TEXT_BYTES,
+} from "./project-import.js";
+import { PythonExecutionService } from "./execution/services/python-execution-service.js";
 import { RoomStore, type LeaveRoomResult } from "./room-store.js";
+import {
+  generateSessionCode,
+  isValidSessionCode,
+  normalizeSessionCode,
+} from "./session-code.js";
+import { RoomTerminal } from "./terminal/room-terminal.js";
+import { SessionTerminalManager } from "./terminal/session-terminal-manager.js";
 import type {
   AiBlock,
   AiBlockActionPayload,
   AiBlockCreatePayload,
   ClientToServerEvents,
   CursorUpdatePayload,
-  ExecutionRunPayload,
   IdeThemeId,
   InterServerEvents,
   JoinRoomPayload,
@@ -20,22 +40,28 @@ import type {
   SnapshotRestorePayload,
   SocketData,
   TerminalCommandPayload,
+  TerminalClearPayload,
   TerminalEntry,
+  TerminalInputPayload,
+  TerminalResizePayload,
+  WorkspaceCloseTabPayload,
+  WorkspaceCreateFilePayload,
+  WorkspaceCreateFolderPayload,
+  WorkspaceDeletePayload,
+  WorkspaceDuplicatePayload,
   WorkspaceFileLanguage,
   WorkspaceFileLanguagePayload,
-  WorkspaceFileNode,
+  WorkspaceFormatPayload,
+  WorkspaceMovePayload,
   WorkspaceFileUpdatePayload,
-  WorkspaceNode,
   WorkspacePreviewState,
   WorkspacePreviewUpdatePayload,
+  WorkspaceRenamePayload,
+  WorkspaceState,
   WorkspaceThemeUpdatePayload,
   WorkspaceViewUpdatePayload,
 } from "./types.js";
-import {
-  executionRuntimeForLanguage,
-  getWorkspaceFile,
-  listWorkspaceFiles,
-} from "./workspace.js";
+import { getWorkspaceFile } from "./workspace.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const CLIENT_URL = process.env.CLIENT_URL ?? "http://localhost:3000";
@@ -46,11 +72,19 @@ const SUPPORTED_IDE_THEMES: IdeThemeId[] = [
   "github",
   "neon",
 ];
+const MAX_PROJECT_ZIP_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 const app = express();
 const httpServer = createServer(app);
 const roomStore = new RoomStore();
-const activeRunsByRoom = new Map<string, string>();
+const executionState = new InMemoryExecutionState();
+const zipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_PROJECT_ZIP_UPLOAD_BYTES,
+    files: 1,
+  },
+});
 
 const io = new Server<
   ClientToServerEvents,
@@ -75,27 +109,235 @@ app.get("/health", (_request, response) => {
   });
 });
 
-function buildMockAiBlock(
+app.post("/sessions", (_request, response) => {
+  try {
+    const roomId = generateSessionCode((candidate) => roomStore.hasRoom(candidate));
+    const createdRoom = roomStore.createRoom(roomId);
+
+    if (!createdRoom) {
+      response.status(500).json({
+        ok: false,
+        error: "Failed to allocate an in-memory session.",
+      });
+      return;
+    }
+
+    response.status(201).json({
+      ok: true,
+      roomId: createdRoom.room.roomId,
+      createdRoom: createdRoom.createdRoom,
+      participantCount: createdRoom.room.participants.length,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    response.status(500).json({
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unable to create a collaborative session.",
+    });
+  }
+});
+
+app.get("/sessions/:sessionCode", (request, response) => {
+  const roomId = normalizeSessionCode(request.params.sessionCode ?? "");
+
+  if (!isValidSessionCode(roomId)) {
+    response.status(400).json({
+      ok: false,
+      error: "Session codes must be 6 uppercase characters.",
+    });
+    return;
+  }
+
+  const room = roomStore.getRoom(roomId);
+
+  if (!room) {
+    response.status(404).json({
+      ok: false,
+      error: "Session not found or no longer active.",
+      roomId,
+    });
+    return;
+  }
+
+  response.json({
+    ok: true,
+    roomId: room.roomId,
+    participantCount: room.participants.length,
+    activeFileId: room.workspace.activeFileId,
+    openTabCount: room.workspace.openFileIds.length,
+    previewVisible: room.ui.preview.isVisible,
+    theme: room.ui.theme,
+  });
+});
+
+app.post("/sessions/:sessionCode/import", (request, response) => {
+  const runZipUpload = zipUpload.single("archive") as unknown as (
+    req: typeof request,
+    res: typeof response,
+    callback: (error?: unknown) => void,
+  ) => void;
+
+  runZipUpload(request, response, async (error) => {
+    if (error instanceof multer.MulterError) {
+      response.status(400).json({
+        ok: false,
+        error:
+          error.code === "LIMIT_FILE_SIZE"
+            ? `ZIP upload exceeds ${Math.round(
+                MAX_PROJECT_ZIP_UPLOAD_BYTES / 1024 / 1024,
+              )} MB.`
+            : "Unable to accept that ZIP upload.",
+      });
+      return;
+    }
+
+    if (error) {
+      response.status(400).json({
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to accept that ZIP upload.",
+      });
+      return;
+    }
+
+    const roomId = normalizeSessionCode(request.params.sessionCode ?? "");
+
+    if (!isValidSessionCode(roomId)) {
+      response.status(400).json({
+        ok: false,
+        error: "Session codes must be 6 uppercase characters.",
+      });
+      return;
+    }
+
+    const room = roomStore.getRoom(roomId);
+
+    if (!room) {
+      response.status(404).json({
+        ok: false,
+        error: "Session not found or no longer active.",
+      });
+      return;
+    }
+
+    const archiveFile = (request as typeof request & { file?: Express.Multer.File }).file;
+
+    if (!archiveFile || !archiveFile.originalname.toLowerCase().endsWith(".zip")) {
+      response.status(400).json({
+        ok: false,
+        error: "Upload a .zip archive to import a project.",
+      });
+      return;
+    }
+
+    roomTerminal.appendText(
+      roomId,
+      "system",
+      `Importing project ZIP ${archiveFile.originalname} into this session.`,
+    );
+
+    try {
+      const importResult = await importWorkspaceFromZipBuffer(archiveFile.buffer, {
+        maxEntries: MAX_PROJECT_IMPORT_ENTRIES,
+        maxTextBytes: MAX_PROJECT_IMPORT_TEXT_BYTES,
+      });
+      const replaceResult = roomStore.replaceWorkspace(
+        roomId,
+        importResult.workspace,
+        {
+          snapshotLabel: `Imported ${archiveFile.originalname}`,
+        },
+      );
+
+      if (!replaceResult) {
+        response.status(404).json({
+          ok: false,
+          error: "Session not found while applying the imported project.",
+        });
+        return;
+      }
+
+      await sessionTerminalManager.syncWorkspace(
+        roomId,
+        replaceResult.room.workspace,
+      );
+      emitRoomState(replaceResult.room);
+
+      roomTerminal.appendText(
+        roomId,
+        "system",
+        [
+          `Project import complete: ${importResult.summary.importedFileCount} files, ${importResult.summary.importedFolderCount} folders.`,
+          importResult.summary.skippedCount > 0
+            ? `Skipped ${importResult.summary.skippedCount} unsupported entries.`
+            : "No entries were skipped.",
+          importResult.summary.openedFilePath
+            ? `Suggested file: ${importResult.summary.openedFilePath}.`
+            : "The session is still empty until you create or upload editable files.",
+        ].join(" "),
+      );
+
+      if (importResult.summary.warnings.length > 0) {
+        const warningPreview = importResult.summary.warnings
+          .slice(0, 8)
+          .map((warning) => `- ${warning.path}: ${warning.reason}`)
+          .join("\n");
+
+        roomTerminal.appendText(
+          roomId,
+          "system",
+          `ZIP import warnings:\n${warningPreview}${
+            importResult.summary.warnings.length > 8 ? "\n- ..." : ""
+          }`,
+        );
+      }
+
+      response.status(201).json({
+        ok: true,
+        roomId,
+        importedFileCount: importResult.summary.importedFileCount,
+        importedFolderCount: importResult.summary.importedFolderCount,
+        skippedCount: importResult.summary.skippedCount,
+        openedFilePath: importResult.summary.openedFilePath,
+      });
+    } catch (importError) {
+      const message =
+        importError instanceof Error
+          ? importError.message
+          : "Unable to import that ZIP project.";
+
+      roomTerminal.appendText(roomId, "system", `Project import failed: ${message}`);
+      response.status(400).json({
+        ok: false,
+        error: message,
+      });
+    }
+  });
+});
+
+function buildAiBlock(
   roomId: string,
   fileId: string,
-  prompt: string,
-  code: string,
+  suggestion: {
+    code: string;
+    explanation: string;
+    insertAfterLine: number;
+  },
 ): AiBlock {
-  const normalizedPrompt = prompt.trim() || "Review the current workspace file.";
-  const lines = code.split("\n");
-  const insertAfterLine = Math.max(1, Math.min(lines.length, 8));
   const suffix = Math.random().toString(36).slice(2, 8);
 
   return {
     id: `aiblock_${Date.now()}_${suffix}`,
     roomId,
     fileId,
-    code: `function applyAiSuggestion() {
-  console.log("Prompt:", ${JSON.stringify(normalizedPrompt)});
-}`,
-    explanation:
-      `Mocked AI block for the MVP. This suggestion targets the active file and inserts a contained helper after line ${insertAfterLine} so the team can review it like a patch.`,
-    insertAfterLine,
+    code: suggestion.code,
+    explanation: suggestion.explanation,
+    insertAfterLine: suggestion.insertAfterLine,
     status: "pending",
     createdAt: new Date().toISOString(),
   };
@@ -130,7 +372,9 @@ function isSupportedWorkspaceLanguage(
 ): language is WorkspaceFileLanguage {
   return (
     language === "javascript" ||
+    language === "typescript" ||
     language === "python" ||
+    language === "c" ||
     language === "html" ||
     language === "css" ||
     language === "cpp" ||
@@ -153,22 +397,6 @@ function isValidCursorPosition(position: CursorUpdatePayload["position"]) {
   );
 }
 
-function createTerminalEntry(
-  roomId: string,
-  kind: TerminalEntry["kind"],
-  text: string,
-  authorName?: string,
-): TerminalEntry {
-  return {
-    id: `terminal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    roomId,
-    kind,
-    text,
-    createdAt: new Date().toISOString(),
-    authorName,
-  };
-}
-
 function emitParticipants(roomId: string, participants: Participant[]) {
   io.to(roomId).emit("room:participants", participants);
 }
@@ -181,6 +409,28 @@ function emitTerminalEntry(roomId: string, entry: TerminalEntry) {
   io.to(roomId).emit("terminal:entry", { entry });
 }
 
+function emitTerminalHistoryInit(roomId: string, entries: TerminalEntry[]) {
+  io.to(roomId).emit("terminal:history:init", {
+    roomId,
+    entries,
+  });
+}
+
+function emitTerminalClear(roomId: string, clearedBy: string) {
+  io.to(roomId).emit("terminal:clear", {
+    roomId,
+    clearedBy,
+  });
+}
+
+function emitTerminalSystemMessage(roomId: string, entry: TerminalEntry) {
+  io.to(roomId).emit("terminal:systemMessage", { entry });
+}
+
+function emitRoomState(room: Parameters<ServerToClientEvents["room:state"]>[0]) {
+  io.to(room.roomId).emit("room:state", room);
+}
+
 function emitWorkspaceView(
   roomId: string,
   activeFileId: string,
@@ -190,6 +440,15 @@ function emitWorkspaceView(
     roomId,
     activeFileId,
     openFileIds,
+  });
+}
+
+function emitWorkspaceTree(
+  roomId: string,
+  workspace: WorkspaceState,
+) {
+  io.to(roomId).emit("workspace:tree", {
+    workspace,
   });
 }
 
@@ -235,41 +494,36 @@ function emitExecutionDone(
   io.to(roomId).emit("run:done", payload);
 }
 
-function appendTerminalEntry(roomId: string, entry: TerminalEntry) {
-  const createdEntry = roomStore.addTerminalEntry(roomId, entry);
+const roomTerminal = new RoomTerminal({
+  roomStore,
+  emitEntry: emitTerminalEntry,
+  emitSystemMessage: emitTerminalSystemMessage,
+  emitClear: emitTerminalClear,
+});
+const sessionTerminalManager = new SessionTerminalManager({
+  roomStore,
+  terminal: roomTerminal,
+});
 
-  if (createdEntry) {
-    emitTerminalEntry(roomId, createdEntry);
-  }
-}
+const executionRouter = new ExecutionRouter([
+  new JavaScriptExecutionService(),
+  new PythonExecutionService(),
+  new CExecutionService(),
+  new CppExecutionService(),
+  new HtmlPreviewExecutionService(),
+]);
 
-function appendExecutionLifecycleEntry(
-  roomId: string,
-  kind: TerminalEntry["kind"],
-  text: string,
-) {
-  appendTerminalEntry(roomId, createTerminalEntry(roomId, kind, text));
-}
-
-function emitExecutionFailure(roomId: string, runId: string, message: string) {
-  appendExecutionLifecycleEntry(roomId, "stderr", message);
-
-  emitExecutionOutput(roomId, {
-    roomId,
-    runId,
-    stream: "stderr",
-    chunk: message,
-    timestamp: new Date().toISOString(),
-  });
-
-  emitExecutionDone(roomId, {
-    roomId,
-    runId,
-    status: "failed",
-    exitCode: 1,
-    finishedAt: new Date().toISOString(),
-  });
-}
+const { handleExecutionRun } = createExecutionRunner({
+  roomStore,
+  terminal: roomTerminal,
+  router: executionRouter,
+  executionState,
+  emitExecutionOutput,
+  emitExecutionDone,
+  emitWorkspacePreview,
+  emitSnapshotCreated,
+  createRunId,
+});
 
 function broadcastDeparture(result: LeaveRoomResult, socketId: string) {
   if (!result.roomId) {
@@ -283,140 +537,8 @@ function broadcastDeparture(result: LeaveRoomResult, socketId: string) {
   }
 }
 
-function workspacePaths(nodes: WorkspaceNode[]) {
-  return nodes
-    .map((node) => node.path)
-    .sort((left, right) => left.localeCompare(right));
-}
-
-function buildTerminalResponseEntries(
-  room: ReturnType<RoomStore["getRoom"]>,
-  roomId: string,
-  command: string,
-  authorName: string,
-): TerminalEntry[] {
-  if (!room) {
-    return [
-      createTerminalEntry(
-        roomId,
-        "stderr",
-        "room state is not available for terminal commands",
-      ),
-    ];
-  }
-
-  const normalizedCommand = command.trim();
-  const [baseCommand] = normalizedCommand.split(/\s+/);
-
-  if (!baseCommand) {
-    return [];
-  }
-
-  if (baseCommand === "help") {
-    return [
-      createTerminalEntry(
-        roomId,
-        "system",
-        "Available demo commands: help, pwd, ls, whoami, status, participants, snapshots, preview, theme",
-      ),
-    ];
-  }
-
-  if (baseCommand === "pwd") {
-    return [createTerminalEntry(roomId, "stdout", `/workspace/${room.roomId}`)];
-  }
-
-  if (baseCommand === "ls") {
-    return [
-      createTerminalEntry(
-        roomId,
-        "stdout",
-        workspacePaths(room.workspace.nodes).join("\n"),
-      ),
-    ];
-  }
-
-  if (baseCommand === "whoami") {
-    return [createTerminalEntry(roomId, "stdout", authorName)];
-  }
-
-  if (baseCommand === "status") {
-    return [
-      createTerminalEntry(
-        roomId,
-        "stdout",
-        [
-          `room=${room.roomId}`,
-          `active_file=${room.workspace.activeFileId}`,
-          `open_tabs=${room.workspace.openFileIds.length}`,
-          `files=${listWorkspaceFiles(room.workspace).length}`,
-          `participants=${room.participants.length}`,
-          `ai_blocks=${room.aiBlocks.length}`,
-          `snapshots=${room.snapshots.length}`,
-          `preview_visible=${room.ui.preview.isVisible}`,
-          `preview_target=${room.ui.preview.targetFileId ?? "none"}`,
-          `theme=${room.ui.theme}`,
-        ].join("\n"),
-      ),
-    ];
-  }
-
-  if (baseCommand === "participants") {
-    return room.participants.length > 0
-      ? room.participants.map((participant) =>
-          createTerminalEntry(roomId, "stdout", participant.name),
-        )
-      : [createTerminalEntry(roomId, "stdout", "No participants connected.")];
-  }
-
-  if (baseCommand === "snapshots") {
-    return room.snapshots.length > 0
-      ? room.snapshots.slice(0, 6).map((snapshot) =>
-          createTerminalEntry(
-            roomId,
-            "stdout",
-            `${snapshot.label} (${new Date(snapshot.createdAt).toLocaleTimeString(
-              [],
-              {
-                hour: "2-digit",
-                minute: "2-digit",
-              },
-            )})`,
-          ),
-        )
-      : [createTerminalEntry(roomId, "stdout", "No snapshots available.")];
-  }
-
-  if (baseCommand === "preview") {
-    return [
-      createTerminalEntry(
-        roomId,
-        "stdout",
-        `visible=${room.ui.preview.isVisible}\ntarget=${room.ui.preview.targetFileId ?? "none"}`,
-      ),
-    ];
-  }
-
-  if (baseCommand === "theme") {
-    return [createTerminalEntry(roomId, "stdout", room.ui.theme)];
-  }
-
-  return [
-    createTerminalEntry(
-      roomId,
-      "stderr",
-      `command not allowed: ${normalizedCommand}`,
-    ),
-    createTerminalEntry(
-      roomId,
-      "system",
-      "Try: help, pwd, ls, whoami, status, participants, snapshots, preview, theme",
-    ),
-  ];
-}
-
 io.on("connection", (socket) => {
-  socket.on("room:join", (payload: JoinRoomPayload) => {
+  socket.on("room:join", async (payload: JoinRoomPayload) => {
     const roomId = normalizeRoomId(payload.roomId);
     const participantName = normalizeParticipantName(payload.name, socket.id);
 
@@ -437,19 +559,30 @@ io.on("connection", (socket) => {
         },
         socket.id,
       );
+
+      if (joinResult.deletedPreviousRoom) {
+        await sessionTerminalManager.destroyRoom(joinResult.previousRoomId);
+      }
     }
 
     socket.join(roomId);
     socket.data.roomId = roomId;
     socket.data.participantName = participantName;
 
-    socket.emit("room:state", joinResult.room);
-    emitParticipants(roomId, joinResult.room.participants);
+    await sessionTerminalManager.ensureRoomTerminal(roomId, joinResult.room.workspace);
+    const hydratedRoom = roomStore.getRoom(roomId) ?? joinResult.room;
+
+    socket.emit("room:state", hydratedRoom);
+    socket.emit("terminal:history:init", {
+      roomId,
+      entries: hydratedRoom.terminalEntries,
+    });
+    emitParticipants(roomId, hydratedRoom.participants);
   });
 
   socket.on(
     "workspace:file:update",
-    ({ roomId, fileId, content }: WorkspaceFileUpdatePayload) => {
+    async ({ roomId, fileId, content }: WorkspaceFileUpdatePayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
       const normalizedFileId = fileId.trim();
       const normalizedContent = normalizeCode(content);
@@ -477,6 +610,11 @@ io.on("connection", (socket) => {
         updatedBy: socket.data.participantName ?? socket.id,
       });
 
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        updateResult.room.workspace,
+      );
+
       if (updateResult.snapshot) {
         emitSnapshotCreated(normalizedRoomId, updateResult.snapshot);
       }
@@ -491,8 +629,7 @@ io.on("connection", (socket) => {
       const normalizedOpenFileIds = openFileIds.map((fileId) => fileId.trim());
 
       if (
-        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
-        !normalizedActiveFileId
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId)
       ) {
         return;
       }
@@ -614,7 +751,7 @@ io.on("connection", (socket) => {
     },
   );
 
-  async function handleExecutionRun({ roomId, fileId }: ExecutionRunPayload) {
+  socket.on("execution:run", async ({ roomId, fileId }) => {
     const normalizedRoomId = normalizeRoomId(roomId);
     const normalizedFileId = fileId?.trim();
 
@@ -622,124 +759,28 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const existingRunId = activeRunsByRoom.get(normalizedRoomId);
+    await handleExecutionRun({
+      roomId: normalizedRoomId,
+      fileId: normalizedFileId,
+    });
+  });
+  socket.on("code:run", async ({ roomId, fileId }) => {
+    const normalizedRoomId = normalizeRoomId(roomId);
+    const normalizedFileId = fileId?.trim();
 
-    if (existingRunId) {
-      emitExecutionFailure(
-        normalizedRoomId,
-        createRunId(),
-        "stderr: another run is already active for this room",
-      );
+    if (!isSocketInRoom(socket.data.roomId, normalizedRoomId)) {
       return;
     }
 
-    const runId = createRunId();
-    activeRunsByRoom.set(normalizedRoomId, runId);
-
-    try {
-      const room = roomStore.getRoom(normalizedRoomId);
-
-      if (!room) {
-        emitExecutionFailure(
-          normalizedRoomId,
-          runId,
-          "stderr: room state was not available for execution",
-        );
-        return;
-      }
-
-      const targetFile = getWorkspaceFile(
-        room.workspace,
-        normalizedFileId ?? room.workspace.activeFileId,
-      );
-
-      if (!targetFile) {
-        emitExecutionFailure(
-          normalizedRoomId,
-          runId,
-          "stderr: no runnable file was selected for execution",
-        );
-        return;
-      }
-
-      if (!targetFile.content.trim()) {
-        emitExecutionFailure(
-          normalizedRoomId,
-          runId,
-          "stderr: the selected file is empty",
-        );
-        return;
-      }
-
-      const runtime =
-        targetFile.executionRuntime ??
-        executionRuntimeForLanguage(targetFile.language);
-
-      if (!runtime) {
-        emitExecutionFailure(
-          normalizedRoomId,
-          runId,
-          `stderr: ${targetFile.language} files do not have an execution runtime yet`,
-        );
-        return;
-      }
-
-      const preRunSnapshot = roomStore.updateFileContent(
-        normalizedRoomId,
-        targetFile.id,
-        targetFile.content,
-        {
-          snapshotLabel: `Pre-run checkpoint (${targetFile.name})`,
-          forceSnapshot: true,
-        },
-      );
-
-      if (preRunSnapshot?.snapshot) {
-        emitSnapshotCreated(normalizedRoomId, preRunSnapshot.snapshot);
-      }
-
-      appendExecutionLifecycleEntry(
-        normalizedRoomId,
-        "system",
-        `▶ Running ${targetFile.path} with ${runtime} runtime`,
-      );
-
-      const donePayload = await runDockerExecution({
-        roomId: normalizedRoomId,
-        runtime,
-        code: targetFile.content,
-        runId,
-        onOutput: (payload) => {
-          emitExecutionOutput(normalizedRoomId, payload);
-          appendExecutionLifecycleEntry(
-            normalizedRoomId,
-            payload.stream,
-            payload.chunk,
-          );
-        },
-      });
-
-      emitExecutionDone(normalizedRoomId, donePayload);
-      appendExecutionLifecycleEntry(
-        normalizedRoomId,
-        donePayload.status === "completed" ? "system" : "stderr",
-        donePayload.status === "completed"
-          ? `✓ ${targetFile.path} finished with exit code ${donePayload.exitCode}`
-          : `✕ ${targetFile.path} failed with exit code ${donePayload.exitCode}`,
-      );
-    } finally {
-      if (activeRunsByRoom.get(normalizedRoomId) === runId) {
-        activeRunsByRoom.delete(normalizedRoomId);
-      }
-    }
-  }
-
-  socket.on("execution:run", handleExecutionRun);
-  socket.on("code:run", handleExecutionRun);
+    await handleExecutionRun({
+      roomId: normalizedRoomId,
+      fileId: normalizedFileId,
+    });
+  });
 
   socket.on(
     "ai:block:create",
-    ({ roomId, fileId, prompt, code }: AiBlockCreatePayload) => {
+    async ({ roomId, fileId, prompt, code }: AiBlockCreatePayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
       const normalizedFileId = fileId.trim();
 
@@ -750,25 +791,78 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const block = buildMockAiBlock(
-        normalizedRoomId,
-        normalizedFileId,
-        prompt.trim(),
-        normalizeCode(code),
-      );
-      const createdBlock = roomStore.addAiBlock(normalizedRoomId, block);
+      const room = roomStore.getRoom(normalizedRoomId);
 
-      if (!createdBlock) {
+      if (!room) {
         return;
       }
 
-      io.to(normalizedRoomId).emit("ai:block:created", {
-        block: createdBlock,
-      });
+      const targetFile = getWorkspaceFile(room.workspace, normalizedFileId);
+
+      if (!targetFile) {
+        return;
+      }
+
+      const normalizedCode = normalizeCode(code);
+      const effectiveFile = {
+        ...targetFile,
+        content: normalizedCode,
+      };
+      const effectiveWorkspace = {
+        ...room.workspace,
+        nodes: room.workspace.nodes.map((node) =>
+          node.kind === "file" && node.id === effectiveFile.id
+            ? effectiveFile
+            : node,
+        ),
+      };
+
+      roomTerminal.appendText(
+        normalizedRoomId,
+        "system",
+        `Gemini is reviewing ${effectiveFile.path} and drafting a suggestion block.`,
+      );
+
+      try {
+        const suggestion = await generateGeminiSuggestion({
+          prompt: prompt.trim(),
+          file: effectiveFile,
+          workspace: effectiveWorkspace,
+        });
+        const block = buildAiBlock(
+          normalizedRoomId,
+          normalizedFileId,
+          suggestion,
+        );
+        const createdBlock = roomStore.addAiBlock(normalizedRoomId, block);
+
+        if (!createdBlock) {
+          return;
+        }
+
+        io.to(normalizedRoomId).emit("ai:block:created", {
+          block: createdBlock,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Gemini failed to generate a suggestion block.";
+
+        roomTerminal.appendText(
+          normalizedRoomId,
+          "system",
+          `AI request failed: ${message}`,
+        );
+        io.to(normalizedRoomId).emit("ai:block:error", {
+          roomId: normalizedRoomId,
+          message,
+        });
+      }
     },
   );
 
-  socket.on("ai:block:accept", ({ roomId, blockId }: AiBlockActionPayload) => {
+  socket.on("ai:block:accept", async ({ roomId, blockId }: AiBlockActionPayload) => {
     const normalizedRoomId = normalizeRoomId(roomId);
     const normalizedBlockId = blockId.trim();
 
@@ -809,6 +903,11 @@ io.on("connection", (socket) => {
           updatedBy: socket.data.participantName ?? socket.id,
         });
       }
+
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        acceptResult.room.workspace,
+      );
     }
   });
 
@@ -839,7 +938,7 @@ io.on("connection", (socket) => {
 
   socket.on(
     "snapshot:restore",
-    ({ roomId, snapshotId }: SnapshotRestorePayload) => {
+    async ({ roomId, snapshotId }: SnapshotRestorePayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
       const normalizedSnapshotId = snapshotId.trim();
 
@@ -860,6 +959,10 @@ io.on("connection", (socket) => {
       }
 
       io.to(normalizedRoomId).emit("room:state", restoreResult.room);
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        restoreResult.room.workspace,
+      );
 
       if (restoreResult.createdSnapshot) {
         emitSnapshotCreated(normalizedRoomId, restoreResult.createdSnapshot);
@@ -869,7 +972,7 @@ io.on("connection", (socket) => {
 
   socket.on(
     "terminal:command",
-    ({ roomId, command }: TerminalCommandPayload) => {
+    async ({ roomId, command }: TerminalCommandPayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
       const normalizedCommand = command.trim();
 
@@ -880,35 +983,341 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const room = roomStore.getRoom(normalizedRoomId);
-      const authorName = socket.data.participantName ?? socket.id;
+      await sessionTerminalManager.runCommand(normalizedRoomId, normalizedCommand);
+    },
+  );
 
-      appendTerminalEntry(
-        normalizedRoomId,
-        createTerminalEntry(
-          normalizedRoomId,
-          "command",
-          `$ ${normalizedCommand}`,
-          authorName,
-        ),
-      );
+  socket.on("terminal:input", async ({ roomId, data }: TerminalInputPayload) => {
+    const normalizedRoomId = normalizeRoomId(roomId);
 
-      const responseEntries = buildTerminalResponseEntries(
-        room,
-        normalizedRoomId,
-        normalizedCommand,
-        authorName,
-      );
+    if (
+      !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+      typeof data !== "string" ||
+      data.length === 0
+    ) {
+      return;
+    }
 
-      for (const entry of responseEntries) {
-        appendTerminalEntry(normalizedRoomId, entry);
+    await sessionTerminalManager.write(normalizedRoomId, data);
+  });
+
+  socket.on(
+    "terminal:resize",
+    ({ roomId, cols, rows }: TerminalResizePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+
+      if (!isSocketInRoom(socket.data.roomId, normalizedRoomId)) {
+        return;
       }
+
+      sessionTerminalManager.resize(normalizedRoomId, cols, rows);
+    },
+  );
+
+  socket.on("terminal:clear", async ({ roomId }: TerminalClearPayload) => {
+    const normalizedRoomId = normalizeRoomId(roomId);
+
+    if (!isSocketInRoom(socket.data.roomId, normalizedRoomId)) {
+      return;
+    }
+
+    await sessionTerminalManager.clear(
+      normalizedRoomId,
+      socket.data.participantName ?? socket.id,
+    );
+  });
+
+  socket.on(
+    "workspace:create:file",
+    async ({ roomId, parentId, name }: WorkspaceCreateFilePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedName = name.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedName
+      ) {
+        return;
+      }
+
+      const result = roomStore.createFile(
+        normalizedRoomId,
+        parentId,
+        normalizedName,
+      );
+
+      if (!result || !result.changed || !result.file) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+
+      if (result.file) {
+        emitWorkspaceView(
+          normalizedRoomId,
+          result.room.workspace.activeFileId,
+          result.room.workspace.openFileIds,
+        );
+      }
+    },
+  );
+
+  socket.on(
+    "workspace:create:folder",
+    async ({ roomId, parentId, name }: WorkspaceCreateFolderPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedName = name.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedName
+      ) {
+        return;
+      }
+
+      const result = roomStore.createFolder(
+        normalizedRoomId,
+        parentId,
+        normalizedName,
+      );
+
+      if (!result || !result.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "workspace:rename",
+    async ({ roomId, nodeId, newName }: WorkspaceRenamePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedNodeId = nodeId.trim();
+      const normalizedName = newName.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedNodeId ||
+        !normalizedName
+      ) {
+        return;
+      }
+
+      const result = roomStore.renameNode(
+        normalizedRoomId,
+        normalizedNodeId,
+        normalizedName,
+      );
+
+      if (!result || !result.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      emitWorkspaceView(
+        normalizedRoomId,
+        result.room.workspace.activeFileId,
+        result.room.workspace.openFileIds,
+      );
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "workspace:delete",
+    async ({ roomId, nodeId }: WorkspaceDeletePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedNodeId = nodeId.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedNodeId
+      ) {
+        return;
+      }
+
+      const result = roomStore.deleteNode(normalizedRoomId, normalizedNodeId);
+
+      if (!result || !result.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      emitWorkspaceView(
+        normalizedRoomId,
+        result.room.workspace.activeFileId,
+        result.room.workspace.openFileIds,
+      );
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "workspace:duplicate",
+    async ({ roomId, nodeId }: WorkspaceDuplicatePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedNodeId = nodeId.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedNodeId
+      ) {
+        return;
+      }
+
+      const result = roomStore.duplicateNode(normalizedRoomId, normalizedNodeId);
+
+      if (!result || !result.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      emitWorkspaceView(
+        normalizedRoomId,
+        result.room.workspace.activeFileId,
+        result.room.workspace.openFileIds,
+      );
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "workspace:move",
+    async ({ roomId, nodeId, targetParentId }: WorkspaceMovePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedNodeId = nodeId.trim();
+      const normalizedTargetParentId = targetParentId?.trim() || null;
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedNodeId
+      ) {
+        return;
+      }
+
+      const result = roomStore.moveNode(
+        normalizedRoomId,
+        normalizedNodeId,
+        normalizedTargetParentId,
+      );
+
+      if (!result || !result.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      emitWorkspaceView(
+        normalizedRoomId,
+        result.room.workspace.activeFileId,
+        result.room.workspace.openFileIds,
+      );
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "workspace:file:format",
+    async ({ roomId, fileId }: WorkspaceFormatPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedFileId = fileId.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedFileId
+      ) {
+        return;
+      }
+
+      const result = await roomStore.formatFile(
+        normalizedRoomId,
+        normalizedFileId,
+      );
+
+      if (!result) {
+        return;
+      }
+
+      if (result.error) {
+        roomTerminal.appendText(
+          normalizedRoomId,
+          "system",
+          `Format failed for ${result.file.name}: ${result.error}`,
+        );
+        return;
+      }
+
+      if (!result.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, result.room.workspace);
+      io.to(normalizedRoomId).emit("workspace:file:updated", {
+        fileId: normalizedFileId,
+        content: result.file.content,
+        updatedBy: socket.data.participantName ?? socket.id,
+      });
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        result.room.workspace,
+      );
+    },
+  );
+
+  socket.on(
+    "workspace:tab:close",
+    ({ roomId, fileId }: WorkspaceCloseTabPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedFileId = fileId.trim();
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedFileId
+      ) {
+        return;
+      }
+
+      const result = roomStore.closeTab(normalizedRoomId, normalizedFileId);
+
+      if (!result || !result.changed) {
+        return;
+      }
+
+      io.to(normalizedRoomId).emit("workspace:tab:closed", {
+        fileId: normalizedFileId,
+        activeFileId: result.room.workspace.activeFileId,
+        openFileIds: result.room.workspace.openFileIds,
+      });
     },
   );
 
   socket.on("disconnect", () => {
     const leaveResult = roomStore.leaveRoomBySocket(socket.id);
     broadcastDeparture(leaveResult, socket.id);
+
+    if (leaveResult.deletedRoom && leaveResult.roomId) {
+      void sessionTerminalManager.destroyRoom(leaveResult.roomId);
+    }
   });
 });
 

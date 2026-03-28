@@ -13,7 +13,9 @@ export type CursorPosition = {
 
 export type WorkspaceFileLanguage =
   | "javascript"
+  | "typescript"
   | "python"
+  | "c"
   | "html"
   | "css"
   | "cpp"
@@ -21,7 +23,7 @@ export type WorkspaceFileLanguage =
   | "markdown"
   | "plaintext";
 
-export type ExecutionRuntime = "javascript" | "python" | "cpp";
+export type ExecutionRuntime = "javascript" | "python" | "c" | "cpp";
 
 export type WorkspaceFolderNode = {
   id: string;
@@ -48,6 +50,16 @@ export type WorkspaceState = {
   nodes: WorkspaceNode[];
   activeFileId: string;
   openFileIds: string[];
+};
+
+export type WorkspacePreviewState = {
+  isVisible: boolean;
+  targetFileId: string | null;
+};
+
+export type WorkspaceUiState = {
+  preview: WorkspacePreviewState;
+  theme?: string;
 };
 
 export type AiBlockStatus = "pending" | "accepted" | "rejected";
@@ -85,6 +97,7 @@ export type TerminalEntry = {
 export type RoomState = {
   roomId: string;
   workspace: WorkspaceState;
+  ui?: WorkspaceUiState;
   participants: Participant[];
   aiBlocks: AiBlock[];
   snapshots: RoomSnapshot[];
@@ -133,9 +146,61 @@ type ClientToServerEvents = {
     fileId: string;
     language: WorkspaceFileLanguage;
   }) => void;
+  "workspace:preview:update": (payload: {
+    roomId: string;
+    isVisible: boolean;
+    targetFileId: string | null;
+  }) => void;
+  "workspace:theme:update": (payload: {
+    roomId: string;
+    theme: string;
+  }) => void;
+  "workspace:create:file": (payload: {
+    roomId: string;
+    parentId: string | null;
+    name: string;
+  }) => void;
+  "workspace:create:folder": (payload: {
+    roomId: string;
+    parentId: string | null;
+    name: string;
+  }) => void;
+  "workspace:rename": (payload: {
+    roomId: string;
+    nodeId: string;
+    newName: string;
+  }) => void;
+  "workspace:delete": (payload: {
+    roomId: string;
+    nodeId: string;
+  }) => void;
+  "workspace:duplicate": (payload: {
+    roomId: string;
+    nodeId: string;
+  }) => void;
+  "workspace:move": (payload: {
+    roomId: string;
+    nodeId: string;
+    targetParentId: string | null;
+  }) => void;
+  "workspace:file:format": (payload: {
+    roomId: string;
+    fileId: string;
+  }) => void;
+  "workspace:tab:close": (payload: {
+    roomId: string;
+    fileId: string;
+  }) => void;
   "code:run": (payload: { roomId: string; fileId?: string }) => void;
   "snapshot:restore": (payload: { roomId: string; snapshotId: string }) => void;
   "terminal:command": (payload: { roomId: string; command: string }) => void;
+  "terminal:input": (payload: { roomId: string; data: string }) => void;
+  "terminal:resize": (payload: {
+    roomId: string;
+    cols: number;
+    rows: number;
+  }) => void;
+  "terminal:clear": (payload: { roomId: string }) => void;
   "cursor:update": (payload: {
     roomId: string;
     fileId: string;
@@ -169,14 +234,35 @@ type ServerToClientEvents = {
     fileId: string;
     language: WorkspaceFileLanguage;
   }) => void;
+  "workspace:preview": (payload: {
+    roomId: string;
+    preview: WorkspacePreviewState;
+  }) => void;
+  "workspace:theme": (payload: {
+    roomId: string;
+    theme: string;
+  }) => void;
+  "workspace:tree": (payload: { workspace: WorkspaceState }) => void;
+  "workspace:tab:closed": (payload: {
+    fileId: string;
+    activeFileId: string;
+    openFileIds: string[];
+  }) => void;
   "cursor:updated": (payload: RemoteCursor) => void;
   "cursor:cleared": (payload: { socketId: string }) => void;
   "run:output": (payload: RunOutputPayload) => void;
   "run:done": (payload: RunDonePayload) => void;
   "ai:block:created": (payload: { block: AiBlock }) => void;
   "ai:block:updated": (payload: { block: AiBlock }) => void;
+  "ai:block:error": (payload: { roomId: string; message: string }) => void;
   "snapshot:created": (payload: { snapshot: RoomSnapshot }) => void;
+  "terminal:history:init": (payload: {
+    roomId: string;
+    entries: TerminalEntry[];
+  }) => void;
   "terminal:entry": (payload: { entry: TerminalEntry }) => void;
+  "terminal:clear": (payload: { roomId: string; clearedBy: string }) => void;
+  "terminal:systemMessage": (payload: { entry: TerminalEntry }) => void;
 };
 
 export type ItecifySocket = Socket<ServerToClientEvents, ClientToServerEvents>;

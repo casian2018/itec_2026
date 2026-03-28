@@ -29,15 +29,21 @@ import {
   type WorkspaceState,
 } from "@/lib/socket";
 import {
+  applyWorkspaceTreeUpdate,
   createFallbackWorkspace,
+  getFileExecutionRoute,
+  getFileIcon,
   getWorkspaceFile,
   getWorkspaceFiles,
   getWorkspaceLanguageLabel,
   toMonacoLanguage,
   updateWorkspaceFileContent,
   updateWorkspaceFileLanguage,
-  updateWorkspaceView,
 } from "@/lib/workspace";
+import {
+  formatSessionCodeForDisplay,
+  uploadSessionProjectZip,
+} from "@/lib/session";
 import { AiSuggestionsPanel } from "./ai-suggestions-panel";
 import { CollaborativeEditor } from "./collaborative-editor";
 import { IdeBottomPanel } from "./ide-bottom-panel";
@@ -58,31 +64,34 @@ type PendingFileUpdate = {
   content: string;
 };
 
+type EditorViewState = {
+  activeFileId: string;
+  openFileIds: string[];
+};
+
+type ProjectImportState = {
+  isImporting: boolean;
+  progress: number | null;
+  message: string | null;
+};
+
 type TopBarProps = {
   currentUserName: string;
   connectionStatus: ConnectionStatus;
   consoleStatus: RunCodeStatus;
-  activeFile: WorkspaceFileNode;
   participantCount: number;
   roomId: string;
-  isAskingAi: boolean;
-  canRunCode: boolean;
-  isRunningCode: boolean;
   isSigningOut: boolean;
-  isPresentationMode: boolean;
-  isPreviewFocused: boolean;
   themeId: IdeThemeId;
-  onAskAi: () => void;
-  onLanguageChange: (language: WorkspaceFileLanguage) => void;
   onThemeChange: (themeId: IdeThemeId) => void;
-  onTogglePreview: () => void;
-  onRunCode: () => void;
   onLogout: () => void;
 };
 
 const LANGUAGE_OPTIONS: WorkspaceFileLanguage[] = [
   "javascript",
+  "typescript",
   "python",
+  "c",
   "html",
   "css",
   "cpp",
@@ -152,21 +161,11 @@ function TopBar({
   currentUserName,
   connectionStatus,
   consoleStatus,
-  activeFile,
   participantCount,
   roomId,
-  isAskingAi,
-  canRunCode,
-  isRunningCode,
   isSigningOut,
-  isPresentationMode,
-  isPreviewFocused,
   themeId,
-  onAskAi,
-  onLanguageChange,
   onThemeChange,
-  onTogglePreview,
-  onRunCode,
   onLogout,
 }: TopBarProps) {
   const statusLabel =
@@ -198,38 +197,6 @@ function TopBar({
           ? "danger"
           : "accent";
 
-  const activeFileCanPreview = activeFile.language === "html";
-  const activeFileCanExecute = Boolean(activeFile.executionRuntime);
-  const activeFileHasContent = activeFile.content.trim().length > 0;
-  const runButtonLabel = isRunningCode
-    ? "Running..."
-    : isPresentationMode
-      ? "Presenting"
-      : activeFileCanPreview
-        ? "Open Preview"
-        : connectionStatus !== "connected"
-        ? "Connect to Run"
-        : !activeFileCanExecute
-          ? "Preview Only"
-          : activeFileHasContent
-            ? "Run"
-            : "Add Code";
-  const actionHint = isPresentationMode
-    ? "Presentation Mode is previewing a saved workspace snapshot without mutating the live room."
-    : isAskingAi
-      ? `Preparing a fresh AI suggestion block for ${activeFile.name}.`
-      : activeFileCanPreview
-        ? `Focus the live preview for ${activeFile.name} inside the right-side IDE inspector.`
-      : isRunningCode
-        ? `Streaming execution output for ${activeFile.name} into the shared terminal while the workspace stays in sync.`
-        : connectionStatus !== "connected"
-          ? "Reconnect to resume room sync, AI requests, terminal activity, and execution."
-          : !activeFileCanExecute
-            ? `${activeFile.name} is preview-oriented. Switch to a runnable file like JavaScript or Python to execute code.`
-            : activeFileHasContent
-              ? `Editing ${activeFile.name} inside the shared workspace model.`
-              : `Add some content to ${activeFile.name} to enable execution.`;
-
   return (
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--titlebar-bg)] px-3 py-2">
       <div className="min-w-0 space-y-2">
@@ -237,7 +204,11 @@ function TopBar({
           <span className="inline-flex h-6 items-center border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2.5 font-mono text-[10px] uppercase tracking-[0.24em] text-[var(--accent)]">
             iTECify
           </span>
-          <StatusBadge label="room" value={roomId} tone="accent" />
+          <StatusBadge
+            label="session"
+            value={formatSessionCodeForDisplay(roomId)}
+            tone="accent"
+          />
           <StatusBadge label="conn" value={statusLabel} tone={connectionTone} />
           <StatusBadge label="run" value={runStatusLabel} tone={runStatusTone} />
           <StatusBadge label="team" value={`${participantCount}`} />
@@ -248,7 +219,7 @@ function TopBar({
 
         <div className="min-w-0">
           <h1 className="truncate text-sm font-medium text-[var(--text-primary)]">
-            EXPLORER / {activeFile.path}
+            EXPLORER / Collaborative Session
           </h1>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
             Collaborative browser IDE with shared files, live preview, terminal output, and AI assistance.
@@ -258,28 +229,6 @@ function TopBar({
 
       <div className="space-y-1 border border-[var(--line)] bg-[var(--bg-panel)] p-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
-          <label className="inline-flex h-8 items-center gap-2 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 text-xs text-[var(--text-secondary)]">
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-              Lang
-            </span>
-            <select
-              value={activeFile.language}
-              onChange={(event) =>
-                onLanguageChange(event.target.value as WorkspaceFileLanguage)
-              }
-              className="bg-transparent font-medium text-[var(--text-primary)] outline-none"
-            >
-              {LANGUAGE_OPTIONS.map((language) => (
-                <option
-                  key={language}
-                  value={language}
-                  className="bg-[var(--select-bg)] text-[var(--text-primary)]"
-                >
-                  {getWorkspaceLanguageLabel(language)}
-                </option>
-              ))}
-            </select>
-          </label>
           <label className="inline-flex h-8 items-center gap-2 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 text-xs text-[var(--text-secondary)]">
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
               Theme
@@ -300,28 +249,12 @@ function TopBar({
               ))}
             </select>
           </label>
-          <ActionButton disabled={isAskingAi || isPresentationMode} onClick={onAskAi}>
-            {isAskingAi ? "Thinking..." : "AI Assist"}
-          </ActionButton>
-          <ActionButton onClick={onTogglePreview}>
-            {isPreviewFocused ? "Hide Preview" : "Show Preview"}
-          </ActionButton>
           <ActionButton>Share</ActionButton>
           <ActionButton>Invite</ActionButton>
-          <ActionButton
-            accent
-            disabled={!canRunCode}
-            onClick={onRunCode}
-          >
-            {runButtonLabel}
-          </ActionButton>
           <ActionButton disabled={isSigningOut} onClick={onLogout}>
             {isSigningOut ? "Signing Out..." : "Log Out"}
           </ActionButton>
         </div>
-        <p className="px-1 text-right text-[11px] text-[var(--text-muted)]">
-          {actionHint}
-        </p>
       </div>
     </header>
   );
@@ -400,14 +333,33 @@ function ActivityRail({
 
 type EditorPanelProps = {
   roomId: string;
-  activeFile: WorkspaceFileNode;
+  activeFile: WorkspaceFileNode | null;
+  hasFiles: boolean;
+  isEmptyWorkspacePromptDismissed: boolean;
+  connectionStatus: ConnectionStatus;
   ideThemeId: IdeThemeId;
   openFiles: WorkspaceFileNode[];
+  canRunCode: boolean;
+  canFormatFile: boolean;
+  isAskingAi: boolean;
+  projectImportState: ProjectImportState;
+  isRunningCode: boolean;
+  isPreviewFocused: boolean;
   presentationSnapshot: RoomSnapshot | null;
   isPresentationMode: boolean;
   onSelectTab: (fileId: string) => void;
+  onCloseTab: (fileId: string) => void;
   onChange: (value: string) => void;
   onCursorChange: (position: CursorPosition) => void;
+  onAskAi: () => void;
+  onFormatFile: () => void;
+  onLanguageChange: (language: WorkspaceFileLanguage) => void;
+  onCreateFile: () => void;
+  onCreateFolder: () => void;
+  onDismissEmptyWorkspacePrompt: () => void;
+  onTogglePreview: () => void;
+  onUploadProjectZip: () => void;
+  onRunCode: () => void;
   remoteCursors: RemoteCursor[];
   onExitPresentation: () => void;
   onPreviousSnapshot: () => void;
@@ -419,13 +371,32 @@ type EditorPanelProps = {
 function EditorPanel({
   roomId,
   activeFile,
+  hasFiles,
+  isEmptyWorkspacePromptDismissed,
+  connectionStatus,
   ideThemeId,
   openFiles,
+  canRunCode,
+  canFormatFile,
+  isAskingAi,
+  projectImportState,
+  isRunningCode,
+  isPreviewFocused,
   presentationSnapshot,
   isPresentationMode,
   onSelectTab,
+  onCloseTab,
   onChange,
   onCursorChange,
+  onAskAi,
+  onFormatFile,
+  onLanguageChange,
+  onCreateFile,
+  onCreateFolder,
+  onDismissEmptyWorkspacePrompt,
+  onTogglePreview,
+  onUploadProjectZip,
+  onRunCode,
   remoteCursors,
   onExitPresentation,
   onPreviousSnapshot,
@@ -434,6 +405,37 @@ function EditorPanel({
   hasNextSnapshot,
 }: EditorPanelProps) {
   const isReadOnly = isPresentationMode;
+  const activeFileCanPreview =
+    activeFile ? getFileExecutionRoute(activeFile) === "preview" : false;
+  const activeFileCanExecute =
+    activeFile
+      ? (() => {
+          const route = getFileExecutionRoute(activeFile);
+          return route !== "unsupported" && route !== "preview";
+        })()
+      : false;
+  const runButtonLabel = isRunningCode
+    ? "Running..."
+    : !activeFile
+      ? "Open File"
+      : activeFileCanPreview
+        ? "Open Preview"
+        : connectionStatus !== "connected"
+          ? "Connect to Run"
+          : activeFileCanExecute
+            ? "Run"
+            : "Run";
+  const actionHint = isPresentationMode
+    ? "Presentation mode este doar pentru preview și nu rulează fișiere."
+    : projectImportState.isImporting
+      ? `Importing ZIP into session ${roomId}${projectImportState.progress !== null ? ` (${projectImportState.progress}%)` : ""}.`
+    : !activeFile
+      ? "Sessionul este gol. Importa un ZIP sau creeaza fisiere noi direct din IDE."
+      : isAskingAi
+        ? `Gemini pregătește o sugestie pentru ${activeFile.name}.`
+        : isRunningCode
+          ? `Rulează ${activeFile.name} din editorul tău curent.`
+          : `Run folosește fișierul activ local: ${activeFile.name}.`;
 
   return (
     <section className="flex min-h-0 flex-col border border-[var(--line)] bg-[var(--editor-shell)]">
@@ -443,7 +445,7 @@ function EditorPanel({
             Editor
           </p>
           <p className="mt-1 truncate font-mono text-xs text-[var(--text-secondary)]">
-            {activeFile.path} · {roomId}
+            {(activeFile?.path ?? "No file open") + ` · ${roomId}`}
           </p>
         </div>
 
@@ -456,10 +458,68 @@ function EditorPanel({
           <span className="border border-cyan-400/10 bg-cyan-400/10 px-2 py-1 font-mono text-cyan-300">
             Shared file
           </span>
-          <span className="border border-[var(--line)] bg-[var(--bg-panel)] px-2 py-1 font-mono text-[var(--text-muted)]">
-            {getWorkspaceLanguageLabel(activeFile.language)}
-          </span>
+          {activeFile ? (
+            <span className="border border-[var(--line)] bg-[var(--bg-panel)] px-2 py-1 font-mono text-[var(--text-muted)]">
+              {getWorkspaceLanguageLabel(activeFile.language)}
+            </span>
+          ) : null}
         </div>
+      </div>
+
+      <div className="border-b border-[var(--line)] bg-[var(--bg-panel)] px-3 py-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <label className="inline-flex h-8 items-center gap-2 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 text-xs text-[var(--text-secondary)]">
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Lang
+            </span>
+            <select
+              value={activeFile?.language ?? "plaintext"}
+              onChange={(event) =>
+                onLanguageChange(event.target.value as WorkspaceFileLanguage)
+              }
+              disabled={!activeFile || isPresentationMode}
+              className="bg-transparent font-medium text-[var(--text-primary)] outline-none"
+            >
+              {LANGUAGE_OPTIONS.map((language) => (
+                <option
+                  key={language}
+                  value={language}
+                  className="bg-[var(--select-bg)] text-[var(--text-primary)]"
+                >
+                  {getWorkspaceLanguageLabel(language)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <ActionButton disabled={isAskingAi || isPresentationMode} onClick={onAskAi}>
+            {isAskingAi ? "Thinking..." : "AI Assist"}
+          </ActionButton>
+          <ActionButton
+            disabled={projectImportState.isImporting || isPresentationMode}
+            onClick={onUploadProjectZip}
+          >
+            {projectImportState.isImporting
+              ? projectImportState.progress !== null
+                ? `Uploading ${projectImportState.progress}%`
+                : "Uploading..."
+              : "Upload Project ZIP"}
+          </ActionButton>
+          <ActionButton disabled={!canFormatFile} onClick={onFormatFile}>
+            Format
+          </ActionButton>
+          <ActionButton disabled={isPresentationMode} onClick={onTogglePreview}>
+            {isPreviewFocused ? "Hide Preview" : "Show Preview"}
+          </ActionButton>
+          <ActionButton accent disabled={!canRunCode} onClick={onRunCode}>
+            {runButtonLabel}
+          </ActionButton>
+        </div>
+        <p className="mt-2 text-[11px] text-[var(--text-muted)]">{actionHint}</p>
+        {projectImportState.message ? (
+          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
+            {projectImportState.message}
+          </p>
+        ) : null}
       </div>
 
       <IdeEditorTabs
@@ -467,10 +527,15 @@ function EditorPanel({
           id: file.id,
           name: file.name,
           path: file.path,
+          icon: getFileIcon(file.language),
+          extension: file.name.includes(".")
+            ? `.${file.name.split(".").pop() ?? ""}`
+            : undefined,
           editable: true,
         }))}
-        activeTabId={activeFile.id}
+        activeTabId={activeFile?.id ?? ""}
         onSelect={onSelectTab}
+        onClose={onCloseTab}
         disabled={isPresentationMode}
       />
 
@@ -518,15 +583,71 @@ function EditorPanel({
           </div>
         ) : null}
 
-        <CollaborativeEditor
-          ideTheme={ideThemeId}
-          readOnly={isReadOnly}
-          language={toMonacoLanguage(activeFile.language)}
-          value={activeFile.content}
-          onChange={onChange}
-          onCursorChange={onCursorChange}
-          remoteCursors={isReadOnly ? [] : remoteCursors}
-        />
+        {activeFile ? (
+          <CollaborativeEditor
+            ideTheme={ideThemeId}
+            readOnly={isReadOnly}
+            language={toMonacoLanguage(activeFile.language)}
+            value={activeFile.content}
+            onChange={onChange}
+            onCursorChange={onCursorChange}
+            remoteCursors={isReadOnly ? [] : remoteCursors}
+          />
+        ) : (
+          <div className="flex h-full min-h-[320px] items-center justify-center bg-[var(--editor-shell)]">
+            {hasFiles || !isEmptyWorkspacePromptDismissed ? (
+              <div className="max-w-lg border border-[var(--line)] bg-[var(--empty-overlay)] px-5 py-4 text-left">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                      {hasFiles ? "No Open Tabs" : "Empty Session Workspace"}
+                    </p>
+                    <p className="mt-2 text-sm text-[var(--text-primary)]">
+                      {hasFiles
+                        ? "The editor has no active tab."
+                        : "This collaborative room starts with no project files."}
+                    </p>
+                  </div>
+                  {!hasFiles ? (
+                    <button
+                      type="button"
+                      onClick={onDismissEmptyWorkspacePrompt}
+                      className="inline-flex h-7 w-7 items-center justify-center border border-[var(--line)] bg-[var(--bg-panel-soft)] text-sm text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)]"
+                      title="Close empty workspace prompt"
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+                <p className="mt-2 text-[13px] leading-6 text-[var(--text-secondary)]">
+                  {hasFiles
+                    ? "Select a file from the explorer to reopen it, or create a new file in the workspace."
+                    : "Upload a project ZIP to import a full codebase into this session, or create a file or folder manually."}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <ActionButton
+                    accent
+                    disabled={projectImportState.isImporting}
+                    onClick={onUploadProjectZip}
+                  >
+                    {projectImportState.isImporting ? "Uploading ZIP..." : "Upload Project ZIP"}
+                  </ActionButton>
+                  <ActionButton onClick={onCreateFile}>New File</ActionButton>
+                  <ActionButton onClick={onCreateFolder}>New Folder</ActionButton>
+                </div>
+              </div>
+            ) : (
+              <div className="border border-[var(--line)] bg-[var(--empty-overlay)] px-4 py-3 text-center">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                  Workspace Empty
+                </p>
+                <p className="mt-2 text-[12px] text-[var(--text-secondary)]">
+                  Use the explorer controls above to upload or create files.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -536,6 +657,48 @@ function createLocalParticipant(name: string): Participant {
   return {
     socketId: "local-user",
     name,
+  };
+}
+
+function normalizeEditorViewState(
+  workspace: WorkspaceState,
+  currentView: EditorViewState | null,
+  preferredView?: Partial<EditorViewState>,
+): EditorViewState {
+  const validFileIds = new Set(getWorkspaceFiles(workspace).map((file) => file.id));
+  const preferredActiveFileId =
+    preferredView?.activeFileId && validFileIds.has(preferredView.activeFileId)
+      ? preferredView.activeFileId
+      : null;
+  const currentActiveFileId =
+    currentView?.activeFileId && validFileIds.has(currentView.activeFileId)
+      ? currentView.activeFileId
+      : null;
+  const activeFileId =
+    preferredActiveFileId ??
+    currentActiveFileId ??
+    (validFileIds.has(workspace.activeFileId) &&
+    workspace.openFileIds.includes(workspace.activeFileId)
+      ? workspace.activeFileId
+      : null) ??
+    "";
+
+  const nextOpenFileIds = [
+    ...(preferredView?.openFileIds ?? []),
+    ...(currentView?.openFileIds ?? []),
+    ...workspace.openFileIds,
+  ].filter(
+    (openFileId, index, collection) =>
+      validFileIds.has(openFileId) && collection.indexOf(openFileId) === index,
+  );
+
+  if (activeFileId && !nextOpenFileIds.includes(activeFileId)) {
+    nextOpenFileIds.unshift(activeFileId);
+  }
+
+  return {
+    activeFileId,
+    openFileIds: nextOpenFileIds,
   };
 }
 
@@ -562,6 +725,7 @@ export function WorkspaceShell({
   const [snapshots, setSnapshots] = useState<RoomSnapshot[]>([]);
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
   const [isAskingAi, setIsAskingAi] = useState(false);
+  const [aiErrorMessage, setAiErrorMessage] = useState<string | null>(null);
   const [isRunningCode, setIsRunningCode] = useState(false);
   const [consoleStatus, setConsoleStatus] = useState<RunCodeStatus>("idle");
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -577,7 +741,19 @@ export function WorkspaceShell({
   const [ideThemeId, setIdeThemeId] = useState<IdeThemeId>(() =>
     getStoredIdeTheme(),
   );
+  const [projectImportState, setProjectImportState] = useState<ProjectImportState>({
+    isImporting: false,
+    progress: null,
+    message: null,
+  });
+  const [isEmptyWorkspacePromptDismissed, setIsEmptyWorkspacePromptDismissed] =
+    useState(false);
+  const [editorView, setEditorView] = useState<EditorViewState>(() =>
+    normalizeEditorViewState(createFallbackWorkspace(), null),
+  );
   const socketRef = useRef<ItecifySocket | null>(null);
+  const projectZipInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceRef = useRef<WorkspaceState>(createFallbackWorkspace());
   const isRunningCodeRef = useRef(false);
   const pendingFileUpdateRef = useRef<PendingFileUpdate | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -589,36 +765,53 @@ export function WorkspaceShell({
   const currentUserNameRef = useRef(currentUserName);
   const joinedParticipantNameRef = useRef<string | null>(null);
 
-  const liveActiveFile =
-    getWorkspaceFile(workspace, workspace.activeFileId) ??
-    getWorkspaceFiles(workspace)[0];
+  const liveActiveFile = getWorkspaceFile(workspace, editorView.activeFileId);
+  const workspaceFiles = getWorkspaceFiles(workspace);
+  const inspectorActiveFile = liveActiveFile ?? workspaceFiles[0] ?? null;
   const presentationSnapshot =
     isPresentationMode
       ? snapshots.find((snapshot) => snapshot.id === previewSnapshotId) ?? null
       : null;
   const displayedWorkspace = presentationSnapshot?.workspace ?? workspace;
-  const displayedActiveFile =
-    getWorkspaceFile(displayedWorkspace, displayedWorkspace.activeFileId) ??
-    getWorkspaceFiles(displayedWorkspace)[0] ??
-    liveActiveFile;
-  const displayedOpenFiles = displayedWorkspace.openFileIds
+  const displayedActiveFile = getWorkspaceFile(
+    displayedWorkspace,
+    isPresentationMode ? displayedWorkspace.activeFileId : editorView.activeFileId,
+  );
+  const displayedOpenFiles = (isPresentationMode
+    ? displayedWorkspace.openFileIds
+    : editorView.openFileIds)
     .map((fileId) => getWorkspaceFile(displayedWorkspace, fileId))
     .filter((file): file is WorkspaceFileNode => Boolean(file));
   const visibleRemoteCursors = liveActiveFile
     ? remoteCursors.filter((cursor) => cursor.fileId === liveActiveFile.id)
     : [];
+  const liveActiveFileExecutionRoute = liveActiveFile
+    ? getFileExecutionRoute(liveActiveFile)
+    : "unsupported";
+  const liveActiveFileCanPreview = liveActiveFileExecutionRoute === "preview";
   const canRunCode =
     !isPresentationMode &&
     !isRunningCode &&
-    Boolean(liveActiveFile) &&
+    !!liveActiveFile &&
+    connectionStatus === "connected" &&
     (
-      liveActiveFile.language === "html" ||
+      liveActiveFileCanPreview ||
       (
-        connectionStatus === "connected" &&
-        Boolean(liveActiveFile.executionRuntime) &&
+        liveActiveFileExecutionRoute !== "unsupported" &&
         liveActiveFile.content.trim().length > 0
       )
     );
+  const canFormatFile =
+    !isPresentationMode &&
+    !!liveActiveFile &&
+    [
+      "javascript",
+      "typescript",
+      "html",
+      "css",
+      "json",
+      "markdown",
+    ].includes(liveActiveFile.language);
   const presentationSnapshotIndex = presentationSnapshot
     ? snapshots.findIndex((snapshot) => snapshot.id === presentationSnapshot.id)
     : -1;
@@ -630,6 +823,55 @@ export function WorkspaceShell({
   useEffect(() => {
     persistIdeTheme(ideThemeId);
   }, [ideThemeId]);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
+
+  useEffect(() => {
+    const nextWorkspace = createFallbackWorkspace();
+
+    clearScheduledSync();
+    pendingFileUpdateRef.current = null;
+    applyingRemoteFileIdRef.current = null;
+    latestCursorRef.current = null;
+    activeRunIdRef.current = null;
+    joinedParticipantNameRef.current = null;
+    workspaceRef.current = nextWorkspace;
+    setWorkspace(nextWorkspace);
+    setEditorView(normalizeEditorViewState(nextWorkspace, null));
+    setConnectionStatus("connecting");
+    setParticipants([createLocalParticipant(currentUserNameRef.current)]);
+    setAiBlocks([]);
+    setSnapshots([]);
+    setTerminalEntries([]);
+    setIsAskingAi(false);
+    setAiErrorMessage(null);
+    setIsRunningCode(false);
+    setConsoleStatus("idle");
+    setConsoleEntries([]);
+    setRemoteCursors([]);
+    setCurrentSocketId(null);
+    setPreviewSnapshotId(null);
+    setIsPresentationMode(false);
+    setInspectorView("preview");
+    setBottomPanelView("terminal");
+    setProjectImportState({
+      isImporting: false,
+      progress: null,
+      message: null,
+    });
+  }, [roomId]);
+
+  useEffect(() => {
+    setIsEmptyWorkspacePromptDismissed(false);
+  }, [roomId]);
+
+  useEffect(() => {
+    if (workspaceFiles.length > 0) {
+      setIsEmptyWorkspacePromptDismissed(false);
+    }
+  }, [workspaceFiles.length]);
 
   useEffect(() => {
     if (
@@ -703,6 +945,33 @@ export function WorkspaceShell({
     syncTimerRef.current = setTimeout(() => {
       flushPendingFileUpdate();
     }, DOCUMENT_SYNC_DELAY_MS);
+  }
+
+  function emitWorkspaceViewUpdate(nextView: EditorViewState) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:view:update", {
+      roomId,
+      activeFileId: nextView.activeFileId,
+      openFileIds: nextView.openFileIds,
+    });
+  }
+
+  function emitWorkspacePreviewUpdate(
+    isVisible: boolean,
+    targetFileId: string | null,
+  ) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:preview:update", {
+      roomId,
+      isVisible,
+      targetFileId,
+    });
   }
 
   const applyRemoteFileUpdate = useCallback((fileId: string, content: string) => {
@@ -806,14 +1075,29 @@ export function WorkspaceShell({
     });
 
     socket.on("room:state", (room) => {
+      if (room.roomId !== roomId) {
+        return;
+      }
+
       clearScheduledSync();
       pendingFileUpdateRef.current = null;
+      workspaceRef.current = room.workspace;
       setWorkspace(room.workspace);
+      setEditorView((currentView) =>
+        normalizeEditorViewState(room.workspace, currentView, room.workspace),
+      );
       setParticipants(room.participants);
       setAiBlocks(room.aiBlocks);
       setSnapshots(room.snapshots);
       setTerminalEntries(room.terminalEntries);
       setIsAskingAi(false);
+      setInspectorView(room.ui?.preview?.isVisible ? "preview" : "ai");
+      if (
+        room.ui?.theme &&
+        IDE_THEMES.some((theme) => theme.id === room.ui?.theme)
+      ) {
+        setIdeThemeId(room.ui.theme as IdeThemeId);
+      }
       setRemoteCursors((currentCursors) =>
         currentCursors.filter((cursor) =>
           room.participants.some(
@@ -847,8 +1131,11 @@ export function WorkspaceShell({
         return;
       }
 
-      setWorkspace((currentWorkspace) =>
-        updateWorkspaceView(currentWorkspace, activeFileId, openFileIds),
+      setEditorView((currentView) =>
+        normalizeEditorViewState(workspaceRef.current, currentView, {
+          activeFileId,
+          openFileIds,
+        }),
       );
     });
 
@@ -864,6 +1151,25 @@ export function WorkspaceShell({
         );
       },
     );
+
+    socket.on("workspace:preview", ({ roomId: updatedRoomId, preview }) => {
+      if (updatedRoomId !== roomId) {
+        return;
+      }
+
+      setInspectorView(preview.isVisible ? "preview" : "ai");
+    });
+
+    socket.on("workspace:theme", ({ roomId: updatedRoomId, theme }) => {
+      if (
+        updatedRoomId !== roomId ||
+        !IDE_THEMES.some((currentTheme) => currentTheme.id === theme)
+      ) {
+        return;
+      }
+
+      setIdeThemeId(theme as IdeThemeId);
+    });
 
     socket.on("cursor:updated", (cursor) => {
       if (cursor.socketId === socket.id) {
@@ -911,6 +1217,7 @@ export function WorkspaceShell({
           left.createdAt.localeCompare(right.createdAt),
         );
       });
+      setAiErrorMessage(null);
       setIsAskingAi(false);
     });
 
@@ -931,6 +1238,15 @@ export function WorkspaceShell({
       });
     });
 
+    socket.on("ai:block:error", ({ roomId: updatedRoomId, message }) => {
+      if (updatedRoomId !== roomId) {
+        return;
+      }
+
+      setAiErrorMessage(message);
+      setIsAskingAi(false);
+    });
+
     socket.on("snapshot:created", ({ snapshot }) => {
       setSnapshots((currentSnapshots) => {
         const nextSnapshots = [
@@ -944,8 +1260,58 @@ export function WorkspaceShell({
       });
     });
 
+    socket.on("terminal:history:init", ({ roomId: initializedRoomId, entries }) => {
+      if (initializedRoomId !== roomId) {
+        return;
+      }
+
+      setTerminalEntries(entries);
+    });
+
     socket.on("terminal:entry", ({ entry }) => {
-      setTerminalEntries((currentEntries) => [...currentEntries, entry].slice(-60));
+      if (entry.roomId !== roomId) {
+        return;
+      }
+
+      setTerminalEntries((currentEntries) => [...currentEntries, entry].slice(-600));
+    });
+
+    socket.on("terminal:systemMessage", ({ entry }) => {
+      if (entry.roomId !== roomId) {
+        return;
+      }
+
+      setTerminalEntries((currentEntries) => [...currentEntries, entry].slice(-600));
+    });
+
+    socket.on("terminal:clear", ({ roomId: clearedRoomId }) => {
+      if (clearedRoomId !== roomId) {
+        return;
+      }
+
+      setTerminalEntries([]);
+    });
+
+    socket.on("workspace:tree", ({ workspace: incomingWorkspace }) => {
+      clearScheduledSync();
+      pendingFileUpdateRef.current = null;
+      workspaceRef.current = incomingWorkspace;
+      setWorkspace((currentWorkspace) => {
+        const nextWorkspace = applyWorkspaceTreeUpdate(currentWorkspace, incomingWorkspace);
+        setEditorView((currentView) =>
+          normalizeEditorViewState(nextWorkspace, currentView, incomingWorkspace),
+        );
+        return nextWorkspace;
+      });
+    });
+
+    socket.on("workspace:tab:closed", ({ activeFileId, openFileIds }) => {
+      setEditorView((currentView) =>
+        normalizeEditorViewState(workspaceRef.current, currentView, {
+          activeFileId,
+          openFileIds,
+        }),
+      );
     });
 
     socket.connect();
@@ -975,18 +1341,6 @@ export function WorkspaceShell({
       name: currentUserName,
     });
   }, [currentUserName, roomId]);
-
-  function emitWorkspaceView(nextWorkspace: WorkspaceState) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:view:update", {
-      roomId,
-      activeFileId: nextWorkspace.activeFileId,
-      openFileIds: nextWorkspace.openFileIds,
-    });
-  }
 
   function handleEditorChange(nextValue: string) {
     if (!liveActiveFile) {
@@ -1045,24 +1399,42 @@ export function WorkspaceShell({
       return;
     }
 
+    flushPendingFileUpdate();
     setInspectorView("ai");
     setIsAskingAi(true);
+    setAiErrorMessage(null);
     socketRef.current.emit("ai:block:create", {
       roomId,
       fileId: liveActiveFile.id,
-      prompt: "Review the current hackathon MVP file and suggest a practical next improvement.",
+      prompt:
+        "Suggest one practical code improvement that helps the user keep coding faster in this file.",
       code: liveActiveFile.content,
     });
   }
 
   function handleTogglePreview() {
-    setInspectorView((currentView) =>
-      currentView === "preview" ? "ai" : "preview",
+    const nextInspectorView = inspectorView === "preview" ? "ai" : "preview";
+
+    setInspectorView(nextInspectorView);
+    emitWorkspacePreviewUpdate(
+      nextInspectorView === "preview",
+      nextInspectorView === "preview"
+        ? inspectorActiveFile?.id ?? liveActiveFile?.id ?? null
+        : null,
     );
   }
 
   function handleThemeChange(nextThemeId: IdeThemeId) {
     setIdeThemeId(nextThemeId);
+
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:theme:update", {
+      roomId,
+      theme: nextThemeId,
+    });
   }
 
   function handleLanguageChange(nextLanguage: WorkspaceFileLanguage) {
@@ -1090,21 +1462,20 @@ export function WorkspaceShell({
       return;
     }
 
-    if (liveActiveFile.language === "html") {
-      setInspectorView("preview");
-      return;
-    }
-
     if (!socketRef.current?.connected) {
       return;
     }
 
     flushPendingFileUpdate();
     setBottomPanelView("terminal");
-    activeRunIdRef.current = null;
-    setConsoleEntries([]);
-    setConsoleStatus("running");
-    setIsRunningCode(true);
+
+    if (!liveActiveFileCanPreview) {
+      activeRunIdRef.current = null;
+      setConsoleEntries([]);
+      setConsoleStatus("running");
+      setIsRunningCode(true);
+    }
+
     socketRef.current.emit("code:run", {
       roomId,
       fileId: liveActiveFile.id,
@@ -1211,14 +1582,36 @@ export function WorkspaceShell({
     });
   }
 
-  function handleTerminalCommand(command: string) {
+  const handleTerminalInput = useCallback((data: string) => {
     if (!socketRef.current?.connected) {
       return;
     }
 
-    socketRef.current.emit("terminal:command", {
+    socketRef.current.emit("terminal:input", {
       roomId,
-      command,
+      data,
+    });
+  }, [roomId]);
+
+  const handleTerminalResize = useCallback((cols: number, rows: number) => {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("terminal:resize", {
+      roomId,
+      cols,
+      rows,
+    });
+  }, [roomId]);
+
+  function handleClearTerminal() {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("terminal:clear", {
+      roomId,
     });
   }
 
@@ -1229,12 +1622,198 @@ export function WorkspaceShell({
 
     flushPendingFileUpdate();
 
-    const nextWorkspace = updateWorkspaceView(workspace, fileId, [
-      ...workspace.openFileIds,
+    const nextView = normalizeEditorViewState(workspaceRef.current, editorView, {
+      activeFileId: fileId,
+      openFileIds: [...editorView.openFileIds, fileId],
+    });
+
+    setEditorView(nextView);
+    emitWorkspaceViewUpdate(nextView);
+  }
+
+  function handleCreateFile(parentId: string | null, name: string) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:create:file", {
+      roomId,
+      parentId,
+      name,
+    });
+  }
+
+  function handleCreateFolder(parentId: string | null, name: string) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:create:folder", {
+      roomId,
+      parentId,
+      name,
+    });
+  }
+
+  function handleRename(nodeId: string, newName: string) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:rename", {
+      roomId,
+      nodeId,
+      newName,
+    });
+  }
+
+  function handleDelete(nodeId: string) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:delete", {
+      roomId,
+      nodeId,
+    });
+  }
+
+  function handleDuplicate(nodeId: string) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:duplicate", {
+      roomId,
+      nodeId,
+    });
+  }
+
+  function handleMove(nodeId: string, targetParentId: string | null) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:move", {
+      roomId,
+      nodeId,
+      targetParentId,
+    });
+  }
+
+  function handleFormatFile(fileId: string) {
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    flushPendingFileUpdate();
+
+    socketRef.current.emit("workspace:file:format", {
+      roomId,
       fileId,
-    ]);
-    setWorkspace(nextWorkspace);
-    emitWorkspaceView(nextWorkspace);
+    });
+  }
+
+  function handleFormatActiveFile() {
+    if (!liveActiveFile) {
+      return;
+    }
+
+    handleFormatFile(liveActiveFile.id);
+  }
+
+  function handleCloseTab(fileId: string) {
+    flushPendingFileUpdate();
+
+    const closedTabIndex = editorView.openFileIds.indexOf(fileId);
+
+    if (closedTabIndex < 0) {
+      return;
+    }
+
+    const nextOpenFileIds = editorView.openFileIds.filter(
+      (openFileId) => openFileId !== fileId,
+    );
+    const nextActiveFileId =
+      editorView.activeFileId === fileId
+        ? nextOpenFileIds[closedTabIndex] ??
+          nextOpenFileIds[closedTabIndex - 1] ??
+          ""
+        : editorView.activeFileId;
+    const nextView = normalizeEditorViewState(workspaceRef.current, editorView, {
+      activeFileId: nextActiveFileId,
+      openFileIds: nextOpenFileIds,
+    });
+
+    setEditorView(nextView);
+
+    if (!socketRef.current?.connected) {
+      return;
+    }
+
+    socketRef.current.emit("workspace:tab:close", {
+      roomId,
+      fileId,
+    });
+  }
+
+  function handleCreateRootFile() {
+    handleCreateFile(null, "untitled.js");
+  }
+
+  function handleCreateRootFolder() {
+    handleCreateFolder(null, "new-folder");
+  }
+
+  function handleUploadProjectZipClick() {
+    projectZipInputRef.current?.click();
+  }
+
+  async function handleProjectZipSelected(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const selectedFile = event.target.files?.[0] ?? null;
+
+    if (!selectedFile) {
+      return;
+    }
+
+    setProjectImportState({
+      isImporting: true,
+      progress: 0,
+      message: `Uploading ${selectedFile.name} into session ${roomId}.`,
+    });
+
+    try {
+      const result = await uploadSessionProjectZip(
+        roomId,
+        selectedFile,
+        (progress) => {
+          setProjectImportState((currentState) => ({
+            ...currentState,
+            isImporting: true,
+            progress,
+          }));
+        },
+      );
+
+      setProjectImportState({
+        isImporting: false,
+        progress: null,
+        message: `Imported ${result.importedFileCount} files and ${result.importedFolderCount} folders.${result.skippedCount > 0 ? ` Skipped ${result.skippedCount} unsupported entries.` : ""}`,
+      });
+    } catch (error) {
+      setProjectImportState({
+        isImporting: false,
+        progress: null,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to import that project ZIP right now.",
+      });
+    } finally {
+      event.target.value = "";
+    }
   }
 
   const connectionLabel =
@@ -1246,29 +1825,26 @@ export function WorkspaceShell({
 
   return (
     <main
-      className="ide-theme-root min-h-screen text-[var(--text-primary)]"
+      className="ide-theme-root flex h-full min-h-0 w-full overflow-hidden text-[var(--text-primary)]"
       data-ide-theme={ideThemeId}
     >
-      <div className="mx-auto flex min-h-screen max-w-none flex-col overflow-hidden border border-[var(--line)] bg-[var(--bg-elevated)]">
+      <input
+        ref={projectZipInputRef}
+        type="file"
+        accept=".zip,application/zip"
+        className="hidden"
+        onChange={handleProjectZipSelected}
+      />
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-none flex-col overflow-hidden bg-[var(--bg-elevated)]">
         <TopBar
           currentUserName={currentUserName}
           connectionStatus={connectionStatus}
           consoleStatus={consoleStatus}
-          activeFile={liveActiveFile}
           participantCount={participants.length}
           roomId={roomId}
-          isAskingAi={isAskingAi}
-          canRunCode={canRunCode}
-          isRunningCode={isRunningCode}
           isSigningOut={isSigningOut}
-          isPresentationMode={isPresentationMode}
-          isPreviewFocused={inspectorView === "preview"}
           themeId={ideThemeId}
-          onAskAi={handleAskAi}
-          onLanguageChange={handleLanguageChange}
           onThemeChange={handleThemeChange}
-          onTogglePreview={handleTogglePreview}
-          onRunCode={handleRunCode}
           onLogout={handleLogout}
         />
         <ParticipantsBar
@@ -1277,7 +1853,7 @@ export function WorkspaceShell({
           currentUserSocketId={currentSocketId}
         />
 
-        <div className="grid flex-1 grid-cols-[48px_minmax(220px,240px)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_260px] overflow-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-[48px_minmax(220px,18vw)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(220px,32vh)] overflow-hidden">
           <div className="row-span-2">
             <ActivityRail
               inspectorView={inspectorView}
@@ -1287,26 +1863,61 @@ export function WorkspaceShell({
             />
           </div>
 
-          <div className="min-h-0 border-r border-[var(--line)]">
+          <div className="min-h-0 overflow-hidden border-r border-[var(--line)]">
             <IdeFileExplorer
               roomId={roomId}
               workspace={workspace}
-              activeFileId={workspace.activeFileId}
+              activeFileId={editorView.activeFileId}
+              isImportingProject={projectImportState.isImporting}
+              isEmptyWorkspacePromptDismissed={isEmptyWorkspacePromptDismissed}
+              importStatusMessage={projectImportState.message}
               onSelect={handleSelectFile}
+              onDismissEmptyWorkspacePrompt={() =>
+                setIsEmptyWorkspacePromptDismissed(true)
+              }
+              onUploadProjectZip={handleUploadProjectZipClick}
+              onCreateFile={handleCreateFile}
+              onCreateFolder={handleCreateFolder}
+              onRename={handleRename}
+              onDelete={handleDelete}
+              onDuplicate={handleDuplicate}
+              onMove={handleMove}
+              onFormatFile={handleFormatFile}
             />
           </div>
 
-          <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid min-h-0 overflow-hidden grid-cols-[minmax(0,1fr)_minmax(300px,30vw)]">
             <EditorPanel
               roomId={roomId}
               activeFile={displayedActiveFile}
+              hasFiles={workspaceFiles.length > 0}
+              isEmptyWorkspacePromptDismissed={isEmptyWorkspacePromptDismissed}
+              connectionStatus={connectionStatus}
               ideThemeId={ideThemeId}
               openFiles={displayedOpenFiles}
+              canRunCode={canRunCode}
+              canFormatFile={canFormatFile}
+              isAskingAi={isAskingAi}
+              projectImportState={projectImportState}
+              isRunningCode={isRunningCode}
+              isPreviewFocused={inspectorView === "preview"}
               presentationSnapshot={presentationSnapshot}
               isPresentationMode={isPresentationMode}
               onSelectTab={handleSelectFile}
+              onCloseTab={handleCloseTab}
               onChange={handleEditorChange}
               onCursorChange={handleCursorChange}
+              onAskAi={handleAskAi}
+              onFormatFile={handleFormatActiveFile}
+              onLanguageChange={handleLanguageChange}
+              onCreateFile={handleCreateRootFile}
+              onCreateFolder={handleCreateRootFolder}
+              onDismissEmptyWorkspacePrompt={() =>
+                setIsEmptyWorkspacePromptDismissed(true)
+              }
+              onTogglePreview={handleTogglePreview}
+              onUploadProjectZip={handleUploadProjectZipClick}
+              onRunCode={handleRunCode}
               remoteCursors={visibleRemoteCursors}
               onExitPresentation={handleExitPresentation}
               onPreviousSnapshot={handlePreviousPresentationSnapshot}
@@ -1315,7 +1926,7 @@ export function WorkspaceShell({
               hasNextSnapshot={presentationSnapshotIndex > 0}
             />
 
-            <div className="min-h-0 border-l border-[var(--line)]">
+            <div className="min-h-0 overflow-hidden border-l border-[var(--line)]">
               <IdeSidePanel
                 title="Inspector"
                 subtitle="Preview and AI tools stay docked to the right, like a real IDE side view."
@@ -1326,10 +1937,15 @@ export function WorkspaceShell({
                 activeTabId={inspectorView}
                 onSelectTab={(view) => setInspectorView(view as InspectorView)}
               >
-                <div className="h-full min-h-0">
+                <div className="h-full min-h-0 overflow-hidden">
                   {inspectorView === "preview" ? (
                     <IdePreviewPanel
-                      activeFile={liveActiveFile}
+                      activeFile={
+                        inspectorActiveFile ??
+                        displayedOpenFiles[0] ??
+                        workspaceFiles[0] ??
+                        null
+                      }
                       workspace={workspace}
                       connectionLabel={connectionLabel}
                       participantCount={participants.length}
@@ -1343,6 +1959,7 @@ export function WorkspaceShell({
                     <AiSuggestionsPanel
                       blocks={aiBlocks}
                       isLoading={isAskingAi}
+                      errorMessage={aiErrorMessage}
                       onAccept={handleAcceptAiBlock}
                       onReject={handleRejectAiBlock}
                     />
@@ -1352,13 +1969,16 @@ export function WorkspaceShell({
             </div>
           </div>
 
-          <div className="min-h-0 border-t border-[var(--line)] lg:col-[2/4]">
+          <div className="min-h-0 overflow-hidden border-t border-[var(--line)] lg:col-[2/4]">
             <IdeBottomPanel
               activeTab={bottomPanelView}
               onSelectTab={setBottomPanelView}
+              roomId={roomId}
               terminalEntries={terminalEntries}
-              canSubmitTerminal={connectionStatus === "connected"}
-              onSubmitTerminal={handleTerminalCommand}
+              canInteractTerminal={connectionStatus === "connected"}
+              onInputTerminal={handleTerminalInput}
+              onResizeTerminal={handleTerminalResize}
+              onClearTerminal={handleClearTerminal}
               consoleEntries={consoleEntries}
               consoleStatus={consoleStatus}
               snapshots={snapshots}

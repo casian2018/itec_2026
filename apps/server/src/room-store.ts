@@ -6,15 +6,25 @@ import type {
   RoomState,
   TerminalEntry,
   WorkspaceFileLanguage,
+  WorkspaceFileNode,
   WorkspacePreviewState,
   WorkspaceUiState,
   WorkspaceState,
 } from "./types.js";
 import {
   cloneWorkspaceState,
-  createDefaultWorkspace,
+  closeWorkspaceTab,
+  createEmptyWorkspace,
+  duplicateWorkspaceFile,
+  formatWorkspaceFile,
+  createWorkspaceFile,
+  createWorkspaceFolder,
+  deleteWorkspaceNode,
   getWorkspaceFile,
+  getPreviewFiles,
   insertCodeIntoWorkspaceFile,
+  moveWorkspaceNode,
+  renameWorkspaceNode,
   serializeWorkspace,
   updateWorkspaceFileContent,
   updateWorkspaceFileLanguage,
@@ -70,16 +80,35 @@ export type JoinRoomResult = {
 };
 
 const MAX_ROOM_SNAPSHOTS = 12;
-const MAX_TERMINAL_ENTRIES = 60;
+const MAX_TERMINAL_ENTRIES = 600;
 const AUTO_SNAPSHOT_INTERVAL_MS = 15_000;
 
 export class RoomStore {
   private rooms = new Map<string, StoredRoom>();
   private socketToRoom = new Map<string, string>();
 
+  hasRoom(roomId: string) {
+    return this.rooms.has(roomId);
+  }
+
   getRoom(roomId: string) {
     const room = this.rooms.get(roomId);
     return room ? this.toRoomState(room) : null;
+  }
+
+  createRoom(roomId: string) {
+    const normalizedRoomId = roomId.trim();
+
+    if (!normalizedRoomId) {
+      return null;
+    }
+
+    const { room, createdRoom } = this.ensureRoom(normalizedRoomId);
+
+    return {
+      room: this.toRoomState(room),
+      createdRoom,
+    };
   }
 
   joinRoom(roomId: string, socketId: string, name: string): JoinRoomResult {
@@ -249,6 +278,277 @@ export class RoomStore {
     };
   }
 
+  createFile(
+    roomId: string,
+    parentId: string | null,
+    name: string,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = createWorkspaceFile(room.workspace, parentId, name);
+
+    if (!result.changed || !result.file) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+        file: null,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+      file: result.file,
+    };
+  }
+
+  createFolder(
+    roomId: string,
+    parentId: string | null,
+    name: string,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = createWorkspaceFolder(room.workspace, parentId, name);
+
+    if (!result.changed || !result.folder) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+        folder: null,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+      folder: result.folder,
+    };
+  }
+
+  renameNode(
+    roomId: string,
+    nodeId: string,
+    newName: string,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = renameWorkspaceNode(room.workspace, nodeId, newName);
+
+    if (!result.changed) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+    };
+  }
+
+  deleteNode(
+    roomId: string,
+    nodeId: string,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = deleteWorkspaceNode(room.workspace, nodeId);
+
+    if (!result.changed) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+    };
+  }
+
+  duplicateNode(roomId: string, nodeId: string) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = duplicateWorkspaceFile(room.workspace, nodeId);
+
+    if (!result.changed || !result.file) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+        file: null,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+      file: result.file,
+    };
+  }
+
+  moveNode(
+    roomId: string,
+    nodeId: string,
+    targetParentId: string | null,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = moveWorkspaceNode(room.workspace, nodeId, targetParentId);
+
+    if (!result.changed) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+    };
+  }
+
+  async formatFile(
+    roomId: string,
+    fileId: string,
+  ): Promise<{
+    room: RoomState;
+    changed: boolean;
+    file: WorkspaceFileNode;
+    error: string | null;
+  } | null> {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = await formatWorkspaceFile(room.workspace, fileId);
+
+    if (!result.file) {
+      return null;
+    }
+
+    if (result.changed) {
+      room.workspace = result.workspace;
+    }
+
+    return {
+      room: this.toRoomState(room),
+      changed: result.changed,
+      file: result.file,
+      error: result.error,
+    };
+  }
+
+  closeTab(
+    roomId: string,
+    fileId: string,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = closeWorkspaceTab(room.workspace, fileId);
+
+    if (!result.changed) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+    };
+  }
+
+  replaceWorkspace(
+    roomId: string,
+    workspace: WorkspaceState,
+    options?: {
+      snapshotLabel?: string;
+    },
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    room.workspace = cloneWorkspaceState(workspace);
+    room.aiBlocks.clear();
+    room.snapshots = [];
+
+    const previewHtmlFile = getPreviewFiles(room.workspace).htmlFile;
+    room.ui = {
+      ...room.ui,
+      preview: {
+        isVisible: Boolean(previewHtmlFile),
+        targetFileId: previewHtmlFile?.id ?? null,
+      },
+    };
+
+    const snapshot =
+      room.workspace.nodes.length > 0
+        ? this.captureSnapshot(
+            room,
+            options?.snapshotLabel ?? "Imported project",
+            true,
+          )
+        : null;
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+      snapshot,
+    };
+  }
+
   addAiBlock(roomId: string, block: AiBlock) {
     const room = this.rooms.get(roomId);
 
@@ -274,6 +574,18 @@ export class RoomStore {
     );
 
     return entry;
+  }
+
+  clearTerminalEntries(roomId: string) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    room.terminalEntries = [];
+
+    return this.toRoomState(room);
   }
 
   acceptAiBlock(roomId: string, blockId: string): AiBlockMutationResult | null {
@@ -467,11 +779,11 @@ export class RoomStore {
 
     const room: StoredRoom = {
       roomId,
-      workspace: createDefaultWorkspace(),
+      workspace: createEmptyWorkspace(),
       ui: {
         preview: {
-          isVisible: true,
-          targetFileId: "file-html-entry",
+          isVisible: false,
+          targetFileId: null,
         },
         theme: "dark",
       },
@@ -480,8 +792,6 @@ export class RoomStore {
       snapshots: [],
       terminalEntries: [],
     };
-
-    this.captureSnapshot(room, "Initial workspace", true);
     this.rooms.set(roomId, room);
 
     return {

@@ -10,7 +10,9 @@ export type CursorPosition = {
 
 export type WorkspaceFileLanguage =
   | "javascript"
+  | "typescript"
   | "python"
+  | "c"
   | "html"
   | "css"
   | "cpp"
@@ -18,7 +20,7 @@ export type WorkspaceFileLanguage =
   | "markdown"
   | "plaintext";
 
-export type ExecutionRuntime = "javascript" | "python" | "cpp";
+export type ExecutionRuntime = "javascript" | "python" | "c" | "cpp";
 export type IdeThemeId = "dark" | "light" | "github" | "neon";
 
 export type WorkspaceFolderNode = {
@@ -204,6 +206,65 @@ export type TerminalCommandPayload = {
   command: string;
 };
 
+export type TerminalInputPayload = {
+  roomId: string;
+  data: string;
+};
+
+export type TerminalResizePayload = {
+  roomId: string;
+  cols: number;
+  rows: number;
+};
+
+export type TerminalClearPayload = {
+  roomId: string;
+};
+
+export type WorkspaceCreateFilePayload = {
+  roomId: string;
+  parentId: string | null;
+  name: string;
+};
+
+export type WorkspaceCreateFolderPayload = {
+  roomId: string;
+  parentId: string | null;
+  name: string;
+};
+
+export type WorkspaceRenamePayload = {
+  roomId: string;
+  nodeId: string;
+  newName: string;
+};
+
+export type WorkspaceDeletePayload = {
+  roomId: string;
+  nodeId: string;
+};
+
+export type WorkspaceDuplicatePayload = {
+  roomId: string;
+  nodeId: string;
+};
+
+export type WorkspaceMovePayload = {
+  roomId: string;
+  nodeId: string;
+  targetParentId: string | null;
+};
+
+export type WorkspaceFormatPayload = {
+  roomId: string;
+  fileId: string;
+};
+
+export type WorkspaceCloseTabPayload = {
+  roomId: string;
+  fileId: string;
+};
+
 export type RunOutputStream = "stdout" | "stderr";
 
 export type RunOutputPayload = {
@@ -229,11 +290,22 @@ export type ClientToServerEvents = {
   "workspace:file:language": (payload: WorkspaceFileLanguagePayload) => void;
   "workspace:preview:update": (payload: WorkspacePreviewUpdatePayload) => void;
   "workspace:theme:update": (payload: WorkspaceThemeUpdatePayload) => void;
+  "workspace:create:file": (payload: WorkspaceCreateFilePayload) => void;
+  "workspace:create:folder": (payload: WorkspaceCreateFolderPayload) => void;
+  "workspace:rename": (payload: WorkspaceRenamePayload) => void;
+  "workspace:delete": (payload: WorkspaceDeletePayload) => void;
+  "workspace:duplicate": (payload: WorkspaceDuplicatePayload) => void;
+  "workspace:move": (payload: WorkspaceMovePayload) => void;
+  "workspace:file:format": (payload: WorkspaceFormatPayload) => void;
+  "workspace:tab:close": (payload: WorkspaceCloseTabPayload) => void;
   "cursor:update": (payload: CursorUpdatePayload) => void;
   "execution:run": (payload: ExecutionRunPayload) => void;
   "code:run": (payload: CodeRunPayload) => void;
   "snapshot:restore": (payload: SnapshotRestorePayload) => void;
   "terminal:command": (payload: TerminalCommandPayload) => void;
+  "terminal:input": (payload: TerminalInputPayload) => void;
+  "terminal:resize": (payload: TerminalResizePayload) => void;
+  "terminal:clear": (payload: TerminalClearPayload) => void;
   "ai:block:create": (payload: AiBlockCreatePayload) => void;
   "ai:block:accept": (payload: AiBlockActionPayload) => void;
   "ai:block:reject": (payload: AiBlockActionPayload) => void;
@@ -249,6 +321,8 @@ export type ServerToClientEvents = {
   ) => void;
   "workspace:preview": (payload: WorkspacePreviewPayload) => void;
   "workspace:theme": (payload: WorkspaceThemePayload) => void;
+  "workspace:tree": (payload: { workspace: WorkspaceState }) => void;
+  "workspace:tab:closed": (payload: { fileId: string; activeFileId: string; openFileIds: string[] }) => void;
   "cursor:updated": (payload: CursorUpdatedPayload) => void;
   "cursor:cleared": (payload: { socketId: string }) => void;
   "execution:output": (payload: RunOutputPayload) => void;
@@ -257,8 +331,18 @@ export type ServerToClientEvents = {
   "run:done": (payload: RunDonePayload) => void;
   "ai:block:created": (payload: { block: AiBlock }) => void;
   "ai:block:updated": (payload: { block: AiBlock }) => void;
+  "ai:block:error": (payload: { roomId: string; message: string }) => void;
   "snapshot:created": (payload: { snapshot: RoomSnapshot }) => void;
+  "terminal:history:init": (payload: {
+    roomId: string;
+    entries: TerminalEntry[];
+  }) => void;
   "terminal:entry": (payload: { entry: TerminalEntry }) => void;
+  "terminal:clear": (payload: {
+    roomId: string;
+    clearedBy: string;
+  }) => void;
+  "terminal:systemMessage": (payload: { entry: TerminalEntry }) => void;
 };
 
 export type InterServerEvents = Record<string, never>;

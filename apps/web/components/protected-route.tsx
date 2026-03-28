@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 
 function FullScreenStatus({
@@ -12,7 +12,7 @@ function FullScreenStatus({
   detail: string;
 }) {
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
+    <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-4">
       <div className="w-full max-w-md rounded-[28px] border border-[var(--line)] bg-[var(--bg-elevated)] p-8 shadow-[0_36px_140px_rgba(0,0,0,0.42)] backdrop-blur-xl">
         <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-[var(--accent)]">
           iTECify Access
@@ -31,6 +31,7 @@ function FullScreenStatus({
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { status } = useAuth();
 
   useEffect(() => {
@@ -38,13 +39,18 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
       return;
     }
 
-    const nextUrl =
+    const queryString = searchParams.toString();
+    const nextPath =
       pathname && pathname !== "/auth"
-        ? `?next=${encodeURIComponent(pathname)}`
+        ? `${pathname}${queryString ? `?${queryString}` : ""}`
+        : "";
+    const nextUrl =
+      nextPath
+        ? `?next=${encodeURIComponent(nextPath)}`
         : "";
 
     router.replace(`/auth${nextUrl}`);
-  }, [pathname, router, status]);
+  }, [pathname, router, searchParams, status]);
 
   if (status === "loading") {
     return (

@@ -7,134 +7,9 @@ import type {
 } from "./socket";
 
 const FALLBACK_WORKSPACE: WorkspaceState = {
-  nodes: [
-    {
-      id: "folder-src",
-      kind: "folder",
-      name: "src",
-      parentId: null,
-      path: "src",
-    },
-    {
-      id: "folder-public",
-      kind: "folder",
-      name: "public",
-      parentId: null,
-      path: "public",
-    },
-    {
-      id: "file-js-entry",
-      kind: "file",
-      name: "index.js",
-      parentId: "folder-src",
-      path: "src/index.js",
-      language: "javascript",
-      executionRuntime: "javascript",
-      content: `export function createWorkspaceSummary() {
-  console.log("iTECify workspace ready.");
-}
-
-createWorkspaceSummary();
-`,
-    },
-    {
-      id: "file-html-entry",
-      kind: "file",
-      name: "index.html",
-      parentId: "folder-public",
-      path: "public/index.html",
-      language: "html",
-      content: `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>iTECify Preview</title>
-    <link rel="stylesheet" href="./style.css" />
-  </head>
-  <body>
-    <main class="shell">
-      <h1>iTECify Live Preview</h1>
-      <p>Edit HTML, CSS, or JS files to update this browser preview.</p>
-      <button id="preview-button" type="button">Click me</button>
-      <p id="preview-output">Preview ready.</p>
-    </main>
-    <script src="./script.js"></script>
-  </body>
-</html>
-`,
-    },
-    {
-      id: "file-css-entry",
-      kind: "file",
-      name: "style.css",
-      parentId: "folder-public",
-      path: "public/style.css",
-      language: "css",
-      content: `:root {
-  color-scheme: dark;
-  font-family: "IBM Plex Mono", monospace;
-  background: #07101c;
-  color: #e8f0fb;
-}
-
-body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  background:
-    radial-gradient(circle at top left, rgba(82, 199, 184, 0.12), transparent 28%),
-    linear-gradient(180deg, #0a1322 0%, #07101c 100%);
-}
-
-.shell {
-  width: min(560px, calc(100vw - 48px));
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 24px;
-  padding: 32px;
-  background: rgba(12, 20, 34, 0.9);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
-}
-
-#preview-button {
-  margin-top: 16px;
-  border: 0;
-  border-radius: 999px;
-  padding: 10px 16px;
-  background: #52c7b8;
-  color: #07101c;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-#preview-output {
-  margin-top: 16px;
-  color: #c9d6ea;
-}
-`,
-    },
-    {
-      id: "file-preview-script",
-      kind: "file",
-      name: "script.js",
-      parentId: "folder-public",
-      path: "public/script.js",
-      language: "javascript",
-      content: `const button = document.querySelector("#preview-button");
-const output = document.querySelector("#preview-output");
-
-if (button && output) {
-  button.addEventListener("click", () => {
-    output.textContent = "Live preview JavaScript executed successfully.";
-  });
-}
-`,
-    },
-  ],
-  activeFileId: "file-js-entry",
-  openFileIds: ["file-js-entry", "file-html-entry", "file-css-entry"],
+  nodes: [],
+  activeFileId: "",
+  openFileIds: [],
 };
 
 export function createFallbackWorkspace(): WorkspaceState {
@@ -188,8 +63,16 @@ export function getWorkspaceLanguageLabel(language: WorkspaceFileLanguage) {
     return "JavaScript";
   }
 
+  if (language === "typescript") {
+    return "TypeScript";
+  }
+
   if (language === "python") {
     return "Python";
+  }
+
+  if (language === "c") {
+    return "C";
   }
 
   if (language === "cpp") {
@@ -216,8 +99,16 @@ export function getWorkspaceLanguageLabel(language: WorkspaceFileLanguage) {
 }
 
 export function toMonacoLanguage(language: WorkspaceFileLanguage) {
+  if (language === "c") {
+    return "cpp";
+  }
+
   if (language === "cpp") {
     return "cpp";
+  }
+
+  if (language === "typescript") {
+    return "typescript";
   }
 
   if (language === "plaintext") {
@@ -234,8 +125,16 @@ export function executionRuntimeForLanguage(
     return "javascript";
   }
 
+  if (language === "typescript") {
+    return undefined;
+  }
+
   if (language === "python") {
     return "python";
+  }
+
+  if (language === "c") {
+    return "c";
   }
 
   if (language === "cpp") {
@@ -245,6 +144,55 @@ export function executionRuntimeForLanguage(
   return undefined;
 }
 
+export type FileExecutionRoute =
+  | "javascript"
+  | "python"
+  | "c"
+  | "cpp"
+  | "preview"
+  | "unsupported";
+
+export function detectExecutionExtension(
+  file: Pick<WorkspaceFileNode, "name" | "path">,
+) {
+  const source = (file.path || file.name).trim().toLowerCase();
+  const lastDotIndex = source.lastIndexOf(".");
+
+  if (lastDotIndex < 0) {
+    return null;
+  }
+
+  return source.slice(lastDotIndex);
+}
+
+export function getFileExecutionRoute(
+  file: Pick<WorkspaceFileNode, "name" | "path">,
+): FileExecutionRoute {
+  const extension = detectExecutionExtension(file);
+
+  if (extension === ".js") {
+    return "javascript";
+  }
+
+  if (extension === ".py") {
+    return "python";
+  }
+
+  if (extension === ".c") {
+    return "c";
+  }
+
+  if (extension === ".cpp" || extension === ".cc" || extension === ".cxx") {
+    return "cpp";
+  }
+
+  if (extension === ".html") {
+    return "preview";
+  }
+
+  return "unsupported";
+}
+
 export function getRuntimeLabel(runtime: ExecutionRuntime | undefined) {
   if (!runtime) {
     return "Preview only";
@@ -252,6 +200,10 @@ export function getRuntimeLabel(runtime: ExecutionRuntime | undefined) {
 
   if (runtime === "cpp") {
     return "C++";
+  }
+
+  if (runtime === "c") {
+    return "C";
   }
 
   return getWorkspaceLanguageLabel(runtime);
@@ -305,6 +257,15 @@ export function getPreviewFiles(workspace: WorkspaceState) {
     cssFile,
     jsFile,
   };
+}
+
+export function isPreviewWorkspaceFile(
+  workspace: WorkspaceState,
+  fileId: string,
+) {
+  const { htmlFile, cssFile, jsFile } = getPreviewFiles(workspace);
+
+  return [htmlFile, cssFile, jsFile].some((file) => file?.id === fileId);
 }
 
 function stripPreviewLinks(html: string) {
@@ -409,4 +370,103 @@ export function updateWorkspaceView(
 
 export function serializeWorkspace(workspace: WorkspaceState) {
   return JSON.stringify(workspace);
+}
+
+export function inferLanguageFromExtension(
+  filename: string,
+): WorkspaceFileLanguage {
+  const lower = filename.toLowerCase();
+
+  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+    return "javascript";
+  }
+
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) {
+    return "typescript";
+  }
+
+  if (lower.endsWith(".py")) {
+    return "python";
+  }
+
+  if (lower.endsWith(".c") || lower.endsWith(".h")) {
+    return "c";
+  }
+
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+    return "html";
+  }
+
+  if (lower.endsWith(".css") || lower.endsWith(".scss")) {
+    return "css";
+  }
+
+  if (
+    lower.endsWith(".cpp") ||
+    lower.endsWith(".cc") ||
+    lower.endsWith(".cxx") ||
+    lower.endsWith(".hpp")
+  ) {
+    return "cpp";
+  }
+
+  if (lower.endsWith(".json")) {
+    return "json";
+  }
+
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) {
+    return "markdown";
+  }
+
+  return "plaintext";
+}
+
+export function getFileIcon(language: WorkspaceFileLanguage): string {
+  switch (language) {
+    case "javascript":
+      return "JS";
+    case "typescript":
+      return "TS";
+    case "python":
+      return "PY";
+    case "c":
+      return "C";
+    case "html":
+      return "HTML";
+    case "css":
+      return "CSS";
+    case "cpp":
+      return "C++";
+    case "json":
+      return "{}";
+    case "markdown":
+      return "MD";
+    default:
+      return "TXT";
+  }
+}
+
+export function applyWorkspaceTreeUpdate(
+  current: WorkspaceState,
+  incoming: WorkspaceState,
+): WorkspaceState {
+  return {
+    ...current,
+    activeFileId: incoming.activeFileId,
+    openFileIds: [...incoming.openFileIds],
+    nodes: incoming.nodes,
+  };
+}
+
+export function applyTabClose(
+  current: WorkspaceState,
+  _fileId: string,
+  activeFileId: string,
+  openFileIds: string[],
+): WorkspaceState {
+  return {
+    ...current,
+    activeFileId,
+    openFileIds,
+  };
 }
