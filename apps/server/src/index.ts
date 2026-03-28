@@ -2,12 +2,17 @@ import cors from "cors";
 import express from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
-import { RoomStore } from "./room-store.js";
+import { RoomStore, type LeaveRoomResult } from "./room-store.js";
 import type {
+  AiBlock,
+  AiBlockActionPayload,
+  AiBlockCreatePayload,
   ClientToServerEvents,
   CodeUpdatePayload,
+  CursorUpdatePayload,
   InterServerEvents,
   JoinRoomPayload,
+  Participant,
   ServerToClientEvents,
   SocketData,
 } from "./types.js";
@@ -43,40 +48,89 @@ app.get("/health", (_request, response) => {
   });
 });
 
+function buildMockAiBlock(
+  roomId: string,
+  prompt: string,
+  code: string,
+): AiBlock {
+  const normalizedPrompt = prompt.trim() || "Review the current workspace.";
+  const lines = code.split("\n");
+  const insertAfterLine = Math.max(1, Math.min(lines.length, 8));
+  const suffix = Math.random().toString(36).slice(2, 8);
+
+  return {
+    id: `aiblock_${Date.now()}_${suffix}`,
+    roomId,
+    code: `function applyAiSuggestion() {
+  console.log("Prompt:", ${JSON.stringify(normalizedPrompt)});
+}`,
+    explanation:
+      `Mocked AI block for the MVP. This suggestion adds a small helper stub after line ${insertAfterLine} so the team can review a contained change before wiring real model output.`,
+    insertAfterLine,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function clearCursorPresence(roomId: string, socketId: string) {
+  io.to(roomId).emit("cursor:cleared", { socketId });
+}
+
+function broadcastParticipants(roomId: string, participants: Participant[]) {
+  io.to(roomId).emit("room:participants", participants);
+}
+
+function broadcastDeparture(result: LeaveRoomResult, socketId: string) {
+  if (!result.roomId) {
+    return;
+  }
+
+  clearCursorPresence(result.roomId, socketId);
+
+  if (result.room) {
+    broadcastParticipants(result.roomId, result.room.participants);
+  }
+}
+
+function isSocketInRoom(socketRoomId: string | undefined, roomId: string) {
+  return Boolean(roomId) && socketRoomId === roomId;
+}
+
 io.on("connection", (socket) => {
   socket.on("room:join", (payload: JoinRoomPayload) => {
     const roomId = payload.roomId.trim();
-    const participantName = payload.name.trim() || `Guest-${socket.id.slice(0, 4)}`;
+    const participantName =
+      payload.name.trim() || `Guest-${socket.id.slice(0, 4)}`;
 
     if (!roomId) {
       return;
     }
 
-    const previousMembership = roomStore.removeParticipant(socket.id);
+    const joinResult = roomStore.joinRoom(roomId, socket.id, participantName);
 
-    if (previousMembership.roomId) {
-      socket.leave(previousMembership.roomId);
-
-      if (previousMembership.room) {
-        io.to(previousMembership.roomId).emit(
-          "room:participants",
-          previousMembership.room.participants,
-        );
-      }
+    if (joinResult.previousRoomId) {
+      socket.leave(joinResult.previousRoomId);
+      broadcastDeparture(
+        {
+          roomId: joinResult.previousRoomId,
+          room: joinResult.previousRoom,
+          participant: joinResult.previousParticipant,
+          deletedRoom: joinResult.deletedPreviousRoom,
+        },
+        socket.id,
+      );
     }
 
     socket.join(roomId);
     socket.data.roomId = roomId;
     socket.data.participantName = participantName;
 
-    const room = roomStore.joinRoom(roomId, socket.id, participantName);
-
-    socket.emit("room:state", room);
-    io.to(roomId).emit("room:participants", room.participants);
+    socket.emit("room:state", joinResult.room);
+    broadcastParticipants(roomId, joinResult.room.participants);
   });
 
   socket.on("code:update", ({ roomId, code }: CodeUpdatePayload) => {
-    if (!roomId || socket.data.roomId !== roomId) {
+    if (!isSocketInRoom(socket.data.roomId, roomId)) {
       return;
     }
 
@@ -92,15 +146,79 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("disconnect", () => {
-    const removedMembership = roomStore.removeParticipant(socket.id);
-
-    if (removedMembership.roomId && removedMembership.room) {
-      io.to(removedMembership.roomId).emit(
-        "room:participants",
-        removedMembership.room.participants,
-      );
+  socket.on("cursor:update", ({ roomId, position }: CursorUpdatePayload) => {
+    if (!isSocketInRoom(socket.data.roomId, roomId)) {
+      return;
     }
+
+    socket.to(roomId).emit("cursor:updated", {
+      socketId: socket.id,
+      name: socket.data.participantName ?? socket.id,
+      position,
+    });
+  });
+
+  socket.on("ai:block:create", ({ roomId, prompt, code }: AiBlockCreatePayload) => {
+    if (!isSocketInRoom(socket.data.roomId, roomId)) {
+      return;
+    }
+
+    const block = buildMockAiBlock(roomId, prompt, code);
+    const createdBlock = roomStore.addAiBlock(roomId, block);
+
+    if (!createdBlock) {
+      return;
+    }
+
+    io.to(roomId).emit("ai:block:created", {
+      block: createdBlock,
+    });
+  });
+
+  socket.on("ai:block:accept", ({ roomId, blockId }: AiBlockActionPayload) => {
+    if (!isSocketInRoom(socket.data.roomId, roomId)) {
+      return;
+    }
+
+    const acceptResult = roomStore.acceptAiBlock(roomId, blockId);
+
+    if (!acceptResult) {
+      return;
+    }
+
+    io.to(roomId).emit("ai:block:updated", {
+      block: acceptResult.block,
+    });
+
+    if (acceptResult.inserted) {
+      io.to(roomId).emit("code:updated", {
+        code: acceptResult.room.code,
+        updatedBy: socket.data.participantName ?? socket.id,
+      });
+    }
+  });
+
+  socket.on("ai:block:reject", ({ roomId, blockId }: AiBlockActionPayload) => {
+    if (!isSocketInRoom(socket.data.roomId, roomId)) {
+      return;
+    }
+
+    const rejectResult = roomStore.rejectAiBlock(roomId, blockId);
+
+    if (!rejectResult) {
+      return;
+    }
+
+    io.to(roomId).emit("ai:block:updated", {
+      block: rejectResult.block,
+    });
+  });
+
+  socket.on("disconnect", () => {
+    const leaveResult = roomStore.leaveRoomBySocket(socket.id);
+    socket.data.roomId = undefined;
+    socket.data.participantName = undefined;
+    broadcastDeparture(leaveResult, socket.id);
   });
 });
 
