@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type {
@@ -26,6 +26,8 @@ const CONTAINER_WORKDIR = "/workspace";
 const DOCKER_MEMORY_LIMIT = "128m";
 const DOCKER_CPU_LIMIT = "0.5";
 const DOCKER_PIDS_LIMIT = "64";
+const EXECUTION_TMP_ROOT =
+  process.env.ITECIFY_EXECUTION_TMP_ROOT?.trim() || tmpdir();
 
 function buildChunk(
   roomId: string,
@@ -52,6 +54,11 @@ async function safeRemoveRunDirectory(runDirectory: string | null) {
   } catch {
     // Best-effort temp directory cleanup.
   }
+}
+
+async function createRunDirectory() {
+  await mkdir(EXECUTION_TMP_ROOT, { recursive: true });
+  return mkdtemp(join(EXECUTION_TMP_ROOT, "itecify-run-"));
 }
 
 async function safeForceRemoveContainer(containerName: string | null) {
@@ -114,7 +121,7 @@ export abstract class DockerExecutionService implements ExecutionService {
     let containerName: string | null = null;
 
     try {
-      runDirectory = await mkdtemp(join(tmpdir(), "itecify-run-"));
+      runDirectory = await createRunDirectory();
       await writeFile(join(runDirectory, this.entryFileName), file.content, "utf8");
 
       containerName = `itecify-${runId}`.replace(/[^a-zA-Z0-9_.-]/g, "-");

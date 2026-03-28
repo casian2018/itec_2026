@@ -1,52 +1,165 @@
 # iTECify
 
-Minimal monorepo starter for a 24h hackathon MVP:
+iTECify is a browser-native collaborative IDE built for the iTEC 2026 brief.
 
-- `apps/web`: Next.js App Router frontend with Tailwind CSS and Monaco
-- `apps/server`: Express + Socket.IO realtime backend
-- plain npm workspaces at the root, no turbo or extra orchestration
+It currently includes:
 
-## Structure
+- session-scoped collaborative workspaces at `/dev/[sessionCode]`
+- VS Code-inspired IDE layout
+- shared file tree, tabs, active file, and multi-cursor editor
+- AI suggestion blocks with accept/reject flow
+- shared integrated PTY terminal per session
+- Docker-backed code execution for JavaScript, Python, C, and C++
+- live preview for HTML/CSS/JS workspaces
+- ZIP project import
+- snapshots and lightweight presentation/replay mode
+- room-isolated state for participants, files, terminal, preview, and execution
 
-```text
-.
-├── apps
-│   ├── server
-│   │   ├── src
-│   │   │   ├── index.ts
-│   │   │   └── rooms.ts
-│   │   ├── package.json
-│   │   └── tsconfig.json
-│   └── web
-│       ├── app
-│       │   ├── globals.css
-│       │   ├── layout.tsx
-│       │   └── page.tsx
-│       ├── components
-│       │   ├── editor-shell.tsx
-│       │   └── monaco-workspace.tsx
-│       ├── lib
-│       │   └── env.ts
-│       ├── package.json
-│       └── tsconfig.json
-├── package.json
-└── tsconfig.base.json
-```
+## Stack
 
-## Run
+- frontend: Next.js App Router + TypeScript + Tailwind + Monaco + xterm.js
+- backend: Express + Socket.IO + TypeScript
+- sandboxing: Docker CLI from the backend
+- AI: Gemini suggestion generation
+
+## Routes
+
+- `/` landing page
+- `/auth` lightweight demo auth
+- `/dev` session lobby
+- `/dev/[sessionCode]` collaborative IDE session
+
+## Local Run
+
+Prerequisites:
+
+- Node.js 20+
+- npm 10+
+- Docker Desktop or Docker Engine running locally
+
+Optional:
+
+- `GEMINI_API_KEY` for AI suggestions
+- `GEMINI_MODEL` if you want a model other than `gemini-2.5-flash`
+
+Install:
 
 ```bash
 npm install
+```
+
+Start both apps:
+
+```bash
 npm run dev
 ```
 
-Frontend: `http://localhost:3000`
+Open:
 
-Backend health check: `http://localhost:4000/health`
+- web: [http://localhost:3000](http://localhost:3000)
+- server health: [http://localhost:4000/health](http://localhost:4000/health)
 
-## Why this shape works
+Useful local commands:
 
-- It keeps the stack split by responsibility: UI in `apps/web`, realtime logic in `apps/server`.
-- npm workspaces are enough for a hackathon and avoid turbo/monorepo overhead.
-- Monaco and Socket.IO are wired early, so you can build collaboration and AI blocks on top of a working shell instead of refactoring later.
-- The backend keeps room state in memory for speed now, while the boundaries are clear enough to swap in Redis, persistence, or sandbox execution later.
+```bash
+npm run dev:web
+npm run dev:server
+npm run typecheck
+npm run lint
+npm run build
+```
+
+## Docker Run
+
+This repo includes Dockerfiles for the web app and the server plus a root `docker-compose.yml`.
+
+Important:
+
+- the backend itself launches Docker containers for code execution
+- because of that, the server container mounts the host Docker socket
+- the compose setup also needs the absolute host project path so execution temp directories can be mounted correctly into runtime containers
+
+Create a root `.env` from `.env.example` and set the absolute repo path:
+
+```bash
+cp .env.example .env
+```
+
+Set:
+
+```bash
+HOST_PROJECT_ROOT=/absolute/path/to/itec_2026
+CLIENT_URL=http://localhost:3000
+NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+Then run:
+
+```bash
+npm run docker:up
+```
+
+Or directly:
+
+```bash
+docker compose up --build
+```
+
+Stop:
+
+```bash
+npm run docker:down
+```
+
+## Session Flow
+
+1. Open `/`
+2. Go through `/auth`
+3. Create a new session or join an existing session code
+4. You land in `/dev/[sessionCode]`
+5. Everyone in the same session shares:
+   - workspace tree
+   - open tabs and active file
+   - AI suggestion blocks
+   - shared terminal
+   - preview state
+   - snapshots
+
+## Execution Support
+
+Supported runnable file types:
+
+- `.js` -> Node in `node:20-alpine`
+- `.py` -> Python in `python:3.11-alpine`
+- `.c` -> GCC compile + run in `gcc:13-bookworm`
+- `.cpp`, `.cc`, `.cxx` -> G++ compile + run in `gcc:13-bookworm`
+- `.html` -> opens live preview instead of backend execution
+
+Safety defaults already enabled:
+
+- `--rm`
+- `--network none`
+- memory limit
+- CPU limit
+- PID limit
+- timeout handling
+- temp directory cleanup
+
+## Notes
+
+- workspace and session state are intentionally in-memory for hackathon speed
+- the shared integrated terminal is a real session-scoped PTY and is practical for local/demo use, not hostile multi-tenant production
+- AI suggestions require a valid Gemini API key on the server
+
+## Verification
+
+Run the full checks:
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+npm run test --workspace @itecify/server
+```

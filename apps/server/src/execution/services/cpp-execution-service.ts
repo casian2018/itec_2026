@@ -6,7 +6,7 @@ export class CppExecutionService extends DockerExecutionService {
       id: "cpp-runner",
       label: "C++ compiler/runner",
       runtime: "cpp",
-      supportedExtensions: [".cpp"],
+      supportedExtensions: [".cpp", ".cc", ".cxx"],
       image: "gcc:13-bookworm",
       entryFileName: "main.cpp",
       command: [
