@@ -31,6 +31,9 @@ type IdeBottomPanelProps = {
   onPreviewSnapshot: (snapshotId: string) => void;
   onRestoreSnapshot: (snapshotId: string) => void;
   onTogglePresentation: () => void;
+  onHelp?: () => void;
+  onRunActive?: () => void;
+  onLivePty?: () => void;
 };
 
 function tabButtonClasses(active: boolean) {
@@ -62,42 +65,78 @@ export function IdeBottomPanel({
   onPreviewSnapshot,
   onRestoreSnapshot,
   onTogglePresentation,
+  onHelp,
+  onRunActive,
+  onLivePty,
 }: IdeBottomPanelProps) {
   const tabs: Array<{ id: BottomPanelTab; label: string }> = [
     { id: "terminal", label: "Terminal" },
     { id: "output", label: "Output" },
     { id: "timeline", label: "Timeline" },
   ];
+  const timelineBadge = snapshots.length;
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--panel-bg)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
-        <div className="min-w-0">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-            Integrated Panel
-          </p>
-          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
-            Shared terminal activity, run output, and time-travel tools live together below the editor.
-          </p>
-        </div>
-        <span className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
-          Bottom Panel
-        </span>
-      </div>
-
-      <div className="flex border-b border-[var(--line)]">
+      <div className="flex h-[30px] flex-shrink-0 items-center border-b border-[var(--line)] px-2">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
             onClick={() => onSelectTab(tab.id)}
-            className={`border-b-2 px-3 py-2 text-xs font-medium transition ${tabButtonClasses(
+            className={`flex h-[30px] items-center gap-1 border-b-2 px-3 text-[11px] font-medium transition ${tabButtonClasses(
               activeTab === tab.id,
             )}`}
           >
             {tab.label}
+            {tab.id === "timeline" && timelineBadge > 0 ? (
+              <span className="rounded bg-[rgba(224,92,106,0.15)] px-1 py-px text-[9px] text-[#e05c6a]">
+                {timelineBadge}
+              </span>
+            ) : null}
           </button>
         ))}
+        <div className="ml-auto flex items-center gap-1 pr-1">
+          {onHelp ? (
+            <button
+              type="button"
+              onClick={onHelp}
+              className="h-[22px] rounded border border-[rgba(255,255,255,0.09)] bg-[#181c27] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#626880] hover:bg-[#1e2230] hover:text-[#a8abbe]"
+              title="Command palette (⌘⇧P)"
+            >
+              Help
+            </button>
+          ) : null}
+          {onRunActive ? (
+            <button
+              type="button"
+              onClick={onRunActive}
+              disabled={!canRunActiveFileFromTerminal}
+              className="h-[22px] rounded border border-[rgba(78,205,196,0.22)] bg-[rgba(78,205,196,0.04)] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#4ecdc4] hover:bg-[rgba(78,205,196,0.12)] disabled:opacity-40"
+              title="Run the active file"
+            >
+              Run active
+            </button>
+          ) : null}
+          {onLivePty ? (
+            <button
+              type="button"
+              onClick={onLivePty}
+              className="h-[22px] rounded border border-[rgba(232,162,58,0.25)] bg-[rgba(232,162,58,0.06)] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#e8a23a] hover:bg-[rgba(232,162,58,0.12)]"
+              title="Show the shared terminal"
+            >
+              Live PTY
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onClearTerminal}
+            className="h-[22px] rounded border border-[rgba(255,255,255,0.09)] bg-[#181c27] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#626880] hover:bg-[#1e2230]"
+            title="Clear terminal buffer"
+          >
+            Clear
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1">

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Playfair_Display, Space_Grotesk } from "next/font/google";
+import { IBM_Plex_Mono, JetBrains_Mono, Playfair_Display, Space_Grotesk, Syne } from "next/font/google";
 import { AuthProvider } from "@/components/auth-provider";
 import "./globals.css";
 
@@ -20,6 +20,18 @@ const playfairDisplay = Playfair_Display({
   weight: ["400", "600", "700", "800", "900"],
 });
 
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains-mono",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+});
+
+const syne = Syne({
+  variable: "--font-syne",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+});
+
 export const metadata: Metadata = {
   title: "iTECify | Collaborative Browser IDE",
   description:
@@ -34,7 +46,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${spaceGrotesk.variable} ${ibmPlexMono.variable} ${playfairDisplay.variable} h-full antialiased`}
+      className={`${spaceGrotesk.variable} ${ibmPlexMono.variable} ${playfairDisplay.variable} ${jetbrainsMono.variable} ${syne.variable} h-full antialiased`}
     >
       <body className="h-full overflow-hidden bg-[var(--bg)] text-[var(--text-primary)]">
         <AuthProvider>{children}</AuthProvider>

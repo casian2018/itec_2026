@@ -140,43 +140,81 @@
 }
 
 .ide-theme-root[data-ide-theme="neon"] {
-  --bg: #090312;
-  --bg-elevated: rgba(14, 8, 28, 0.88);
-  --bg-panel: rgba(18, 10, 36, 0.92);
+  --bg: #060913;
+  --bg-elevated: rgba(10, 13, 28, 0.64);
+  --bg-panel: rgba(15, 18, 38, 0.8);
   --bg-panel-soft: rgba(255, 255, 255, 0.04);
-  --line: rgba(192, 132, 252, 0.18);
-  --line-strong: rgba(192, 132, 252, 0.3);
-  --text-primary: #f6edff;
-  --text-secondary: #dccff7;
-  --text-muted: #a88bcd;
-  --accent: #c084fc;
-  --accent-contrast: #14051f;
-  --accent-soft: rgba(192, 132, 252, 0.12);
-  --accent-line: rgba(192, 132, 252, 0.26);
+  --line: rgba(139, 124, 246, 0.16);
+  --line-strong: rgba(139, 124, 246, 0.28);
+  --text-primary: #f7f3ff;
+  --text-secondary: #d9cffb;
+  --text-muted: #9f95c9;
+  --accent: #8b7cf6;
+  --accent-contrast: #0b0818;
+  --accent-soft: rgba(139, 124, 246, 0.12);
+  --accent-line: rgba(139, 124, 246, 0.24);
   --danger: #fb7185;
-  --editor-shell: #0f0820;
-  --editor-inline: #140b28;
-  --overlay-panel: rgba(18, 10, 36, 0.9);
-  --terminal-bg: linear-gradient(180deg, #11071f, #0b0416);
+  --editor-shell: #0c1021;
+  --editor-inline: #101428;
+  --overlay-panel: rgba(14, 16, 34, 0.9);
+  --terminal-bg: linear-gradient(180deg, #0d1021, #090c19);
   --terminal-text: #efe8ff;
-  --terminal-muted: #9170b8;
+  --terminal-muted: #938ab8;
   --surface-chip: rgba(255, 255, 255, 0.04);
-  --select-bg: #140b28;
+  --select-bg: #0f1327;
   --preview-frame: #ffffff;
-  --empty-overlay: rgba(15, 8, 32, 0.92);
-  --titlebar-bg: #11071f;
-  --activitybar-bg: #11071f;
-  --sidebar-bg: #17102d;
-  --editor-tab-bg: #1d1238;
-  --editor-tab-active-bg: #140b28;
-  --editor-tab-hover-bg: #241744;
-  --panel-bg: #140b28;
-  --statusbar-bg: #7c3aed;
+  --empty-overlay: rgba(14, 16, 34, 0.92);
+  --titlebar-bg: rgba(11, 14, 29, 0.82);
+  --activitybar-bg: rgba(11, 14, 29, 0.82);
+  --sidebar-bg: rgba(16, 19, 40, 0.78);
+  --editor-tab-bg: rgba(21, 25, 48, 0.72);
+  --editor-tab-active-bg: rgba(11, 14, 29, 0.92);
+  --editor-tab-hover-bg: rgba(30, 34, 62, 0.8);
+  --panel-bg: rgba(12, 15, 31, 0.78);
+  --statusbar-bg: #6366f1;
   --statusbar-text: #f6edff;
   --page-gradient:
-    radial-gradient(circle at top left, rgba(192, 132, 252, 0.16), transparent 30%),
-    radial-gradient(circle at top right, rgba(34, 211, 238, 0.1), transparent 24%),
-    linear-gradient(180deg, #12071f 0%, #090312 100%);
+    radial-gradient(circle at top left, rgba(139, 124, 246, 0.18), transparent 30%),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.12), transparent 24%),
+    linear-gradient(180deg, #070d19 0%, #0c1322 48%, #060913 100%);
+  color-scheme: dark;
+}
+
+.ide-theme-root[data-ide-theme="itecify"] {
+  --bg: #0b0d12;
+  --bg-elevated: #0f1118;
+  --bg-panel: #0f1118;
+  --bg-panel-soft: #181c27;
+  --line: rgba(255, 255, 255, 0.055);
+  --line-strong: rgba(255, 255, 255, 0.09);
+  --text-primary: #e8eaf2;
+  --text-secondary: #a8abbe;
+  --text-muted: #626880;
+  --accent: #4ecdc4;
+  --accent-contrast: #0b0d12;
+  --accent-soft: rgba(78, 205, 196, 0.1);
+  --accent-line: rgba(78, 205, 196, 0.22);
+  --danger: #e05c6a;
+  --editor-shell: #0b0d12;
+  --editor-inline: #0b0d12;
+  --overlay-panel: rgba(15, 17, 24, 0.96);
+  --terminal-bg: #0b0d12;
+  --terminal-text: #a8abbe;
+  --terminal-muted: #3d4259;
+  --surface-chip: #181c27;
+  --select-bg: #13161f;
+  --preview-frame: #ffffff;
+  --empty-overlay: rgba(11, 13, 18, 0.95);
+  --titlebar-bg: #0f1118;
+  --activitybar-bg: #0f1118;
+  --sidebar-bg: #0f1118;
+  --editor-tab-bg: #13161f;
+  --editor-tab-active-bg: #0b0d12;
+  --editor-tab-hover-bg: #1e2230;
+  --panel-bg: #0f1118;
+  --statusbar-bg: #1e2230;
+  --statusbar-text: #e8eaf2;
+  --page-gradient: #0b0d12;
   color-scheme: dark;
 }
 

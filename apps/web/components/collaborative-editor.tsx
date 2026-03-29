@@ -25,6 +25,13 @@ type CollaborativeEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onCursorChange: (position: CursorPosition) => void;
+  onSelectionChange?: (
+    selection: {
+      startLineNumber: number;
+      endLineNumber: number;
+      selectedText: string;
+    } | null,
+  ) => void;
   remoteCursors: RemoteCursor[];
   language?: string;
   readOnly?: boolean;
@@ -111,6 +118,7 @@ export function CollaborativeEditor({
   value,
   onChange,
   onCursorChange,
+  onSelectionChange,
   remoteCursors,
   language = "javascript",
   readOnly = false,
@@ -206,6 +214,25 @@ export function CollaborativeEditor({
       onCursorChange({
         lineNumber: event.position.lineNumber,
         column: event.position.column,
+      });
+    });
+
+    editor.onDidChangeCursorSelection((event) => {
+      if (!onSelectionChange) {
+        return;
+      }
+
+      const model = editor.getModel();
+
+      if (!model || event.selection.isEmpty()) {
+        onSelectionChange(null);
+        return;
+      }
+
+      onSelectionChange({
+        startLineNumber: event.selection.startLineNumber,
+        endLineNumber: event.selection.endLineNumber,
+        selectedText: model.getValueInRange(event.selection),
       });
     });
 

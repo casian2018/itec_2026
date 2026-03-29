@@ -70,6 +70,9 @@ export function SharedChatPanel({
         <p className="mt-2 text-[12px] leading-5 text-[var(--text-muted)]">
           Visible to every collaborator in this coding session. Keep room-level decisions and coordination here.
         </p>
+        <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)]">
+          Use /ai or @gemini to stream a shared AI reply into this thread.
+        </p>
       </div>
 
       <div
@@ -82,7 +85,7 @@ export function SharedChatPanel({
               Shared Chat Is Empty
             </p>
             <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-              Start the session conversation here. Everyone in the room will see the same thread.
+              Start the session conversation here. Everyone in the room will see the same thread, and `/ai ...` keeps the Gemini reply visible and saved for everyone.
             </p>
           </div>
         ) : null}
@@ -124,7 +127,7 @@ export function SharedChatPanel({
             onChange={(event) => setDraft(event.target.value)}
             rows={2}
             disabled={!canSend}
-            placeholder="Share context with the session..."
+            placeholder="Share context with the session or use /ai ..."
             className="min-h-[72px] flex-1 resize-none border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--accent-line)]"
           />
           <button

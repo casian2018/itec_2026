@@ -5,12 +5,15 @@ import type {
   WorkspaceNode,
   WorkspaceState,
 } from "./socket";
+import JSZip from "jszip";
 
 const FALLBACK_WORKSPACE: WorkspaceState = {
   nodes: [],
   activeFileId: "",
   openFileIds: [],
 };
+const READ_ONLY_FILE_BYTES = 180_000;
+const READ_ONLY_FILE_LINES = 4000;
 
 export function createFallbackWorkspace(): WorkspaceState {
   return cloneWorkspace(FALLBACK_WORKSPACE);
@@ -430,7 +433,76 @@ export function inferLanguageFromExtension(
   return "plaintext";
 }
 
-export function getFileIcon(language: WorkspaceFileLanguage): string {
+function inferExtensionFromName(name: string) {
+  const lowerName = name.trim().toLowerCase();
+  const extensionIndex = lowerName.lastIndexOf(".");
+
+  if (extensionIndex < 0) {
+    return "";
+  }
+
+  return lowerName.slice(extensionIndex);
+}
+
+export function getFileIcon(
+  fileOrLanguage:
+    | WorkspaceFileLanguage
+    | Pick<WorkspaceFileNode, "name" | "path" | "language">,
+) {
+  const language =
+    typeof fileOrLanguage === "string"
+      ? fileOrLanguage
+      : fileOrLanguage.language;
+  const sourceName =
+    typeof fileOrLanguage === "string"
+      ? ""
+      : fileOrLanguage.path || fileOrLanguage.name;
+  const extension = inferExtensionFromName(sourceName);
+
+  if (extension === ".env" || sourceName.endsWith(".env.local")) {
+    return "ENV";
+  }
+
+  if (extension === ".gitignore") {
+    return "GIT";
+  }
+
+  if (extension === ".md" || extension === ".markdown") {
+    return "MD";
+  }
+
+  if (extension === ".json") {
+    return "{}";
+  }
+
+  if (extension === ".html" || extension === ".htm") {
+    return "HTM";
+  }
+
+  if (extension === ".css" || extension === ".scss") {
+    return "CSS";
+  }
+
+  if (extension === ".py") {
+    return "PY";
+  }
+
+  if (extension === ".c") {
+    return "C";
+  }
+
+  if (extension === ".cpp" || extension === ".cc" || extension === ".cxx") {
+    return "C++";
+  }
+
+  if (extension === ".ts" || extension === ".tsx") {
+    return "TS";
+  }
+
+  if (extension === ".js" || extension === ".jsx" || extension === ".mjs" || extension === ".cjs") {
+    return "JS";
+  }
+
   switch (language) {
     case "javascript":
       return "JS";
@@ -453,6 +525,71 @@ export function getFileIcon(language: WorkspaceFileLanguage): string {
     default:
       return "TXT";
   }
+}
+
+export function isHiddenWorkspacePath(path: string) {
+  return path
+    .split("/")
+    .some((segment) => segment.trim().startsWith("."));
+}
+
+function countFileLines(content: string) {
+  return content.replace(/\r\n/g, "\n").split("\n").length;
+}
+
+function hasBinaryLikeContent(content: string) {
+  return content.includes("\u0000");
+}
+
+export function getWorkspaceFileReadOnlyState(
+  file: Pick<WorkspaceFileNode, "name" | "path" | "content"> | null,
+) {
+  if (!file) {
+    return {
+      isReadOnly: false,
+      reason: null,
+    };
+  }
+
+  const size = new TextEncoder().encode(file.content).length;
+  const lineCount = countFileLines(file.content);
+  const extension = inferExtensionFromName(file.path || file.name);
+
+  if (hasBinaryLikeContent(file.content)) {
+    return {
+      isReadOnly: true,
+      reason: "Binary-like files open in read-only mode.",
+    };
+  }
+
+  if (size > READ_ONLY_FILE_BYTES) {
+    return {
+      isReadOnly: true,
+      reason: "Large files open in read-only mode for a smoother demo.",
+    };
+  }
+
+  if (lineCount > READ_ONLY_FILE_LINES) {
+    return {
+      isReadOnly: true,
+      reason: "Very large files open in read-only mode.",
+    };
+  }
+
+  if (
+    extension === ".lock" ||
+    (file.path || file.name).toLowerCase().endsWith(".min.js")
+  ) {
+    return {
+      isReadOnly: true,
+      reason: "Generated or lock files open read-only by default.",
+    };
+  }
+
+  return {
+    isReadOnly: false,
+    reason: null,
+  };
 }
 
 export type WorkspaceFileSearchResult = {
@@ -536,7 +673,7 @@ export function searchWorkspaceFiles(
         fileId: file.id,
         name: file.name,
         path: file.path,
-        icon: getFileIcon(file.language),
+        icon: getFileIcon(file),
         score,
       };
     })
@@ -581,7 +718,7 @@ export function searchWorkspaceContents(
         fileId: file.id,
         name: file.name,
         path: file.path,
-        icon: getFileIcon(file.language),
+        icon: getFileIcon(file),
         lineNumber: index + 1,
         lineText: line.trim() || "(empty line)",
         score: 180 - startIndex * 2,
@@ -627,4 +764,19 @@ export function applyTabClose(
     activeFileId,
     openFileIds,
   };
+}
+
+export async function createWorkspaceZipBlob(workspace: WorkspaceState) {
+  const zip = new JSZip();
+
+  for (const node of workspace.nodes) {
+    if (node.kind === "folder") {
+      zip.folder(node.path);
+      continue;
+    }
+
+    zip.file(node.path, node.content);
+  }
+
+  return zip.generateAsync({ type: "blob" });
 }

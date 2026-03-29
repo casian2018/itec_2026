@@ -7,6 +7,8 @@ type IdeEditorTab = {
   icon?: string;
   extension?: string;
   editable?: boolean;
+  isDirty?: boolean;
+  isReadOnly?: boolean;
 };
 
 type IdeEditorTabsProps = {
@@ -51,6 +53,17 @@ export function IdeEditorTabs({
                 <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
                   {tab.name}
                 </span>
+                {tab.isDirty ? (
+                  <span
+                    className="inline-flex h-2.5 w-2.5 rounded-full bg-amber-300"
+                    title="Unsaved changes"
+                  />
+                ) : null}
+                {tab.isReadOnly ? (
+                  <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                    RO
+                  </span>
+                ) : null}
                 {tab.extension ? (
                   <span className="hidden font-mono text-[10px] text-[var(--text-muted)] md:inline">
                     {tab.extension}

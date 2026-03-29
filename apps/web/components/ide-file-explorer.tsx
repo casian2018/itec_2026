@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  WorkspaceTemplateKind,
   WorkspaceFileLanguage,
   WorkspaceNode,
   WorkspaceState,
 } from "@/lib/socket";
 import { formatSessionCodeForDisplay } from "@/lib/session";
-import { getFileIcon } from "@/lib/workspace";
+import { getFileIcon, isHiddenWorkspacePath } from "@/lib/workspace";
 
 type IdeFileExplorerProps = {
   roomId: string;
@@ -26,6 +27,19 @@ type IdeFileExplorerProps = {
   onDuplicate: (nodeId: string) => void;
   onMove: (nodeId: string, targetParentId: string | null) => void;
   onFormatFile: (fileId: string) => void;
+  onCreateTemplate: (template: WorkspaceTemplateKind) => void;
+  showHiddenFiles: boolean;
+  onToggleHiddenFiles: () => void;
+  onCopyFileContent: (fileId: string) => void;
+  onDownloadFile: (fileId: string) => void;
+  onAiFileAction: (
+    action:
+      | "generate-readme"
+      | "add-inline-docs"
+      | "refactor-file"
+      | "generate-tests",
+    nodeId: string | null,
+  ) => void;
 };
 
 type ExplorerRow = {
@@ -161,11 +175,7 @@ function supportsFormatting(language: string | undefined) {
         "typescript",
         "html",
         "css",
-        "python",
-        "c",
-        "cpp",
         "markdown",
-        "plaintext",
         "json",
       ].includes(language),
   );
@@ -418,6 +428,12 @@ export function IdeFileExplorer({
   onDuplicate,
   onMove,
   onFormatFile,
+  onCreateTemplate,
+  showHiddenFiles,
+  onToggleHiddenFiles,
+  onCopyFileContent,
+  onDownloadFile,
+  onAiFileAction,
 }: IdeFileExplorerProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [inlineInput, setInlineInput] = useState<InlineInputMode>(null);
@@ -495,6 +511,10 @@ export function IdeFileExplorer({
   }, [workspace]);
 
   const visibleRows = rows.filter((row) => {
+    if (!showHiddenFiles && isHiddenWorkspacePath(row.path)) {
+      return false;
+    }
+
     let currentParentId = row.parentId;
 
     while (currentParentId) {
@@ -632,6 +652,25 @@ export function IdeFileExplorer({
             parentId: createParentId,
           }),
       });
+      actions.push({
+        label: "Python Starter",
+        onClick: () => onCreateTemplate("python-starter"),
+      });
+      actions.push({
+        label: "C++ Starter",
+        onClick: () => onCreateTemplate("cpp-starter"),
+      });
+      actions.push({
+        label: "HTML/CSS Starter",
+        onClick: () => onCreateTemplate("html-css-starter"),
+      });
+
+      if (contextMenu.kind === "root" && !node) {
+        actions.push({
+          label: "Generate README Documentation",
+          onClick: () => onAiFileAction("generate-readme", null),
+        });
+      }
     }
 
     if (node) {
@@ -662,9 +701,38 @@ export function IdeFileExplorer({
 
       if (isFile) {
         actions.push({
+          label: "Copy File Content",
+          onClick: () => onCopyFileContent(node.id),
+        });
+        actions.push({
+          label: "Download File",
+          onClick: () => onDownloadFile(node.id),
+        });
+        actions.push({
+          label: "Generate README Documentation",
+          onClick: () => onAiFileAction("generate-readme", node.id),
+        });
+        actions.push({
+          label: "Add Inline Documentation",
+          onClick: () => onAiFileAction("add-inline-docs", node.id),
+        });
+        actions.push({
+          label: "Refactor This File",
+          onClick: () => onAiFileAction("refactor-file", node.id),
+        });
+        actions.push({
+          label: "Generate Unit Tests",
+          onClick: () => onAiFileAction("generate-tests", node.id),
+        });
+        actions.push({
           label: "Format File",
           disabled: !supportsFormatting(node.language),
           onClick: () => onFormatFile(node.id),
+        });
+      } else {
+        actions.push({
+          label: "Generate README Documentation",
+          onClick: () => onAiFileAction("generate-readme", node.id),
         });
       }
 
@@ -676,7 +744,18 @@ export function IdeFileExplorer({
     }
 
     return actions;
-  }, [contextMenu, contextNode, handleCopyPath, onDelete, onDuplicate, onFormatFile]);
+  }, [
+    contextMenu,
+    contextNode,
+    handleCopyPath,
+    onCopyFileContent,
+    onCreateTemplate,
+    onAiFileAction,
+    onDelete,
+    onDownloadFile,
+    onDuplicate,
+    onFormatFile,
+  ]);
 
   return (
     <aside className="relative flex h-full min-h-0 flex-col bg-[var(--sidebar-bg)]">
@@ -690,6 +769,14 @@ export function IdeFileExplorer({
           </p>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            title={showHiddenFiles ? "Hide hidden files" : "Show hidden files"}
+            onClick={onToggleHiddenFiles}
+            className="inline-flex h-6 items-center border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)]"
+          >
+            {showHiddenFiles ? "DOT ON" : "DOT OFF"}
+          </button>
           <button
             type="button"
             title="Upload Project ZIP"
@@ -843,8 +930,13 @@ export function IdeFileExplorer({
                         )}`}
                       >
                         {getFileIcon(
-                          (row.language as WorkspaceFileLanguage | undefined) ??
-                            "plaintext",
+                          {
+                            name: row.name,
+                            path: row.path,
+                            language:
+                              (row.language as WorkspaceFileLanguage | undefined) ??
+                              "plaintext",
+                          },
                         )}
                       </span>
                       <div className="min-w-0 flex-1">
@@ -923,6 +1015,20 @@ export function IdeFileExplorer({
                   className="border border-[var(--accent-line)] bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-[var(--accent-contrast)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isImportingProject ? "Uploading ZIP..." : "Upload Project ZIP"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCreateTemplate("python-starter")}
+                  className="border border-[var(--line)] bg-[var(--bg-panel)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)]"
+                >
+                  Python Starter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCreateTemplate("html-css-starter")}
+                  className="border border-[var(--line)] bg-[var(--bg-panel)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)]"
+                >
+                  HTML/CSS Starter
                 </button>
                 <button
                   type="button"

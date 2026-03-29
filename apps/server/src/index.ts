@@ -4,8 +4,11 @@ import { createServer } from "node:http";
 import multer from "multer";
 import { Server } from "socket.io";
 import {
+  generateGeminiExecutionErrorExplanation,
   generateGeminiEditProposal,
   generateGeminiSuggestion,
+  streamGeminiChatReply,
+  generateGeminiWorkspaceGeneration,
 } from "./ai/gemini-codegen.js";
 import { createExecutionRunner } from "./execution/create-execution-runner.js";
 import { ExecutionRouter } from "./execution/execution-router.js";
@@ -26,12 +29,14 @@ import {
   isValidSessionCode,
   normalizeSessionCode,
 } from "./session-code.js";
+import { getWorkspaceTemplate } from "./workspace-templates.js";
 import { RoomTerminal } from "./terminal/room-terminal.js";
 import { SessionTerminalManager } from "./terminal/session-terminal-manager.js";
 import type {
   AiBlock,
   AiBlockActionPayload,
   AiBlockCreatePayload,
+  AiAssistantIntent,
   AiEditProposal,
   AiSuggestionMode,
   ChatAuthorType,
@@ -42,6 +47,7 @@ import type {
   InterServerEvents,
   JoinRoomPayload,
   PrivateChatSendPayload,
+  SessionCommentAddPayload,
   Participant,
   RoomSnapshot,
   SharedChatSendPayload,
@@ -58,6 +64,7 @@ import type {
   WorkspaceCloseTabPayload,
   WorkspaceCreateFilePayload,
   WorkspaceCreateFolderPayload,
+  WorkspaceCreateTemplatePayload,
   WorkspaceDeletePayload,
   WorkspaceDuplicatePayload,
   WorkspaceFileLanguage,
@@ -448,6 +455,242 @@ function normalizeAiSuggestionMode(mode?: string): AiSuggestionMode {
   return "assist";
 }
 
+function normalizeAiAssistantIntent(intent?: string): AiAssistantIntent {
+  if (
+    intent === "explain" ||
+    intent === "generate-files" ||
+    intent === "summarize"
+  ) {
+    return intent;
+  }
+
+  return "edit";
+}
+
+function normalizeAiSelection(selection?: PrivateChatSendPayload["selection"]) {
+  if (
+    !selection ||
+    !Number.isInteger(selection.startLineNumber) ||
+    !Number.isInteger(selection.endLineNumber) ||
+    typeof selection.selectedText !== "string" ||
+    selection.startLineNumber <= 0 ||
+    selection.endLineNumber <= 0
+  ) {
+    return null;
+  }
+
+  const selectedText = selection.selectedText.replace(/\r\n/g, "\n").trim();
+
+  if (!selectedText) {
+    return null;
+  }
+
+  return {
+    startLineNumber: selection.startLineNumber,
+    endLineNumber: selection.endLineNumber,
+    selectedText,
+  };
+}
+
+function normalizeAiCursorLine(
+  cursorLine: number | null | undefined,
+  file?: ReturnType<typeof getWorkspaceFile> | null,
+) {
+  const normalizedCursorLine =
+    typeof cursorLine === "number" && Number.isInteger(cursorLine) && cursorLine > 0
+      ? cursorLine
+      : null;
+
+  if (!file || !normalizedCursorLine) {
+    return null;
+  }
+
+  const totalLines = Math.max(1, file.content.replace(/\r\n/g, "\n").split("\n").length);
+  return Math.min(normalizedCursorLine, totalLines);
+}
+
+function extractSharedAiPrompt(content: string) {
+  const normalizedContent = content.trim();
+
+  if (normalizedContent === "/ai" || /^@gemini\b$/i.test(normalizedContent)) {
+    return "";
+  }
+
+  if (normalizedContent.startsWith("/ai ")) {
+    return normalizedContent.slice(4).trim();
+  }
+
+  const geminiMention = normalizedContent.match(/^@gemini\b[:\s-]*(.+)$/i);
+
+  if (geminiMention) {
+    return geminiMention[1]?.trim() ?? "";
+  }
+
+  return null;
+}
+
+async function streamSharedAiReplyMessage({
+  roomId,
+  prompt,
+  workspace,
+  file,
+  initialContent,
+}: {
+  roomId: string;
+  prompt: string;
+  workspace: WorkspaceState;
+  file?: ReturnType<typeof getWorkspaceFile> | null;
+  initialContent: string;
+}) {
+  const placeholderMessage = buildChatMessage({
+    roomId,
+    channel: "shared",
+    authorType: "ai",
+    authorName: "Gemini",
+    content: initialContent,
+    fileId: file?.id ?? null,
+  });
+  const createdMessage = roomStore.addSharedChatMessage(roomId, placeholderMessage);
+
+  if (!createdMessage) {
+    return null;
+  }
+
+  emitSharedChatMessage(roomId, createdMessage);
+
+  try {
+    const finalContent = await streamGeminiChatReply({
+      prompt,
+      workspace,
+      file,
+      onPartialText: (partialText) => {
+        const updatedMessage = roomStore.updateSharedChatMessage(
+          roomId,
+          createdMessage.id,
+          partialText,
+        );
+
+        if (updatedMessage) {
+          emitSharedChatMessageUpdated(roomId, updatedMessage);
+        }
+      },
+    });
+
+    const updatedMessage =
+      roomStore.updateSharedChatMessage(roomId, createdMessage.id, finalContent) ??
+      createdMessage;
+
+    emitSharedChatMessageUpdated(roomId, updatedMessage);
+    return updatedMessage;
+  } catch (error) {
+    const fallbackContent =
+      error instanceof Error
+        ? `I couldn't finish that reply: ${error.message}`
+        : "I couldn't finish that reply.";
+    const updatedMessage =
+      roomStore.updateSharedChatMessage(
+        roomId,
+        createdMessage.id,
+        fallbackContent,
+      ) ?? createdMessage;
+
+    emitSharedChatMessageUpdated(roomId, updatedMessage);
+    return null;
+  }
+}
+
+async function streamPrivateAiReplyMessage({
+  roomId,
+  userId,
+  prompt,
+  workspace,
+  file,
+  mode,
+  cursorLine,
+  selection,
+  initialContent,
+}: {
+  roomId: string;
+  userId: string;
+  prompt: string;
+  workspace: WorkspaceState;
+  file?: ReturnType<typeof getWorkspaceFile> | null;
+  mode?: AiSuggestionMode | null;
+  cursorLine?: number | null;
+  selection?: PrivateChatSendPayload["selection"];
+  initialContent: string;
+}) {
+  const placeholderMessage = buildChatMessage({
+    roomId,
+    channel: "private",
+    authorType: "ai",
+    authorName: "Gemini",
+    content: initialContent,
+    userId,
+    fileId: file?.id ?? null,
+  });
+  const createdMessage = roomStore.addPrivateChatMessage(
+    roomId,
+    userId,
+    placeholderMessage,
+  );
+
+  if (!createdMessage) {
+    return null;
+  }
+
+  emitPrivateChatMessage(roomId, userId, createdMessage);
+
+  try {
+    const finalContent = await streamGeminiChatReply({
+      prompt,
+      workspace,
+      file,
+      mode: mode ?? undefined,
+      cursorLine,
+      selection: selection ?? null,
+      onPartialText: (partialText) => {
+        const updatedMessage = roomStore.updatePrivateChatMessage(
+          roomId,
+          userId,
+          createdMessage.id,
+          partialText,
+        );
+
+        if (updatedMessage) {
+          emitPrivateChatMessageUpdated(roomId, userId, updatedMessage);
+        }
+      },
+    });
+
+    const updatedMessage =
+      roomStore.updatePrivateChatMessage(
+        roomId,
+        userId,
+        createdMessage.id,
+        finalContent,
+      ) ?? createdMessage;
+
+    emitPrivateChatMessageUpdated(roomId, userId, updatedMessage);
+    return updatedMessage;
+  } catch (error) {
+    const fallbackContent =
+      error instanceof Error
+        ? `I couldn't finish that reply: ${error.message}`
+        : "I couldn't finish that reply.";
+    const updatedMessage =
+      roomStore.updatePrivateChatMessage(
+        roomId,
+        userId,
+        createdMessage.id,
+        fallbackContent,
+      ) ?? createdMessage;
+
+    emitPrivateChatMessageUpdated(roomId, userId, updatedMessage);
+    return null;
+  }
+}
+
 function createRunId() {
   return `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -551,6 +794,10 @@ function emitSharedChatMessage(roomId: string, message: ChatMessage) {
   io.to(roomId).emit("chat:shared:message", { message });
 }
 
+function emitSharedChatMessageUpdated(roomId: string, message: ChatMessage) {
+  io.to(roomId).emit("chat:shared:message:updated", { message });
+}
+
 function emitPrivateChatInit(roomId: string, userId: string, messages: ChatMessage[]) {
   emitToUserInRoom(roomId, userId, "chat:private:init", {
     roomId,
@@ -560,6 +807,14 @@ function emitPrivateChatInit(roomId: string, userId: string, messages: ChatMessa
 
 function emitPrivateChatMessage(roomId: string, userId: string, message: ChatMessage) {
   emitToUserInRoom(roomId, userId, "chat:private:message", { message });
+}
+
+function emitPrivateChatMessageUpdated(
+  roomId: string,
+  userId: string,
+  message: ChatMessage,
+) {
+  emitToUserInRoom(roomId, userId, "chat:private:message:updated", { message });
 }
 
 function emitAiProposalInit(roomId: string, userId: string, proposals: AiEditProposal[]) {
@@ -677,6 +932,30 @@ const { handleExecutionRun } = createExecutionRunner({
   emitWorkspacePreview,
   emitSnapshotCreated,
   createRunId,
+  explainFailedRun: async ({ roomId, file, stdout, stderr }) => {
+    try {
+      const room = roomStore.getRoom(roomId);
+
+      if (!room) {
+        return;
+      }
+
+      const explanation = await generateGeminiExecutionErrorExplanation({
+        file,
+        workspace: room.workspace,
+        stdout,
+        stderr,
+      });
+
+      roomTerminal.appendText(
+        roomId,
+        "system",
+        `AI explanation: ${explanation.explanation} Suggested fix: ${explanation.suggestedFix}`,
+      );
+    } catch {
+      // Best-effort enhancement only.
+    }
+  },
 });
 
 function broadcastDeparture(result: LeaveRoomResult, socketId: string) {
@@ -685,6 +964,18 @@ function broadcastDeparture(result: LeaveRoomResult, socketId: string) {
   }
 
   clearCursorPresence(result.roomId, socketId);
+
+  if (result.participant?.name) {
+    const activity = roomStore.appendActivity(result.roomId, {
+      kind: "leave",
+      message: `${result.participant.name} left the session`,
+      actorName: result.participant.name,
+    });
+
+    if (activity) {
+      io.to(result.roomId).emit("session:activity", activity);
+    }
+  }
 
   if (result.room) {
     emitParticipants(result.roomId, result.room.participants);
@@ -760,9 +1051,20 @@ io.on("connection", (socket) => {
     socket.data.userId = userId;
 
     await sessionTerminalManager.ensureRoomTerminal(roomId, joinResult.room.workspace);
+
+    const joinActivity = roomStore.appendActivity(roomId, {
+      kind: "join",
+      message: `${participantName} joined the session`,
+      actorName: participantName,
+    });
+
     const hydratedRoom = roomStore.getRoom(roomId) ?? joinResult.room;
 
     socket.emit("room:state", hydratedRoom);
+
+    if (joinActivity) {
+      socket.to(roomId).emit("session:activity", joinActivity);
+    }
     socket.emit("chat:shared:init", {
       roomId,
       messages: roomStore.getSharedChatMessages(roomId),
@@ -982,7 +1284,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("chat:shared:send", ({ roomId, content }: SharedChatSendPayload) => {
+  socket.on("chat:shared:send", async ({ roomId, content }: SharedChatSendPayload) => {
     const normalizedRoomId = normalizeRoomId(roomId);
     const normalizedContent = content.trim();
 
@@ -1003,27 +1305,80 @@ io.on("connection", (socket) => {
     });
 
     const createdMessage = roomStore.addSharedChatMessage(normalizedRoomId, message);
+    const room = roomStore.getRoom(normalizedRoomId);
 
-    if (!createdMessage) {
+    if (!createdMessage || !room) {
       return;
     }
 
     emitSharedChatMessage(normalizedRoomId, createdMessage);
+
+    const sharedAiPrompt = extractSharedAiPrompt(normalizedContent);
+
+    if (sharedAiPrompt === null) {
+      return;
+    }
+
+    if (!sharedAiPrompt) {
+      const usageMessage = buildChatMessage({
+        roomId: normalizedRoomId,
+        channel: "shared",
+        authorType: "system",
+        authorName: "AI System",
+        content: "Use `/ai your question` or `@gemini your question` in the shared session chat.",
+      });
+      const createdUsageMessage = roomStore.addSharedChatMessage(
+        normalizedRoomId,
+        usageMessage,
+      );
+
+      if (createdUsageMessage) {
+        emitSharedChatMessage(normalizedRoomId, createdUsageMessage);
+      }
+
+      return;
+    }
+
+    const activeFile = getWorkspaceFile(
+      room.workspace,
+      room.workspace.activeFileId,
+    );
+
+    await streamSharedAiReplyMessage({
+      roomId: normalizedRoomId,
+      prompt: sharedAiPrompt,
+      workspace: room.workspace,
+      file: activeFile,
+      initialContent: activeFile
+        ? `Gemini is replying with context from ${activeFile.path}...`
+        : "Gemini is replying with the current workspace context...",
+    });
   });
 
   socket.on(
     "chat:private:send",
-    async ({ roomId, fileId, content }: PrivateChatSendPayload) => {
+    async ({
+      roomId,
+      fileId,
+      content,
+      intent,
+      mode,
+      cursorLine,
+      selection,
+    }: PrivateChatSendPayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
-      const normalizedFileId = fileId.trim();
       const normalizedContent = content.trim();
       const userId = socket.data.userId?.trim() ?? socket.id;
+      const normalizedIntent = normalizeAiAssistantIntent(intent);
+      const normalizedMode = normalizeAiSuggestionMode(mode);
+      const normalizedSelection = normalizeAiSelection(selection);
+      const normalizedFileId = fileId?.trim() ?? "";
 
-      if (
-        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
-        !normalizedFileId ||
-        !normalizedContent
-      ) {
+      if (!isSocketInRoom(socket.data.roomId, normalizedRoomId)) {
+        return;
+      }
+
+      if (normalizedIntent !== "summarize" && !normalizedContent) {
         return;
       }
 
@@ -1033,13 +1388,27 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const targetFile = getWorkspaceFile(room.workspace, normalizedFileId);
+      const targetFile =
+        normalizedFileId.length > 0
+          ? getWorkspaceFile(room.workspace, normalizedFileId)
+          : null;
+      const normalizedCursorLine = normalizeAiCursorLine(cursorLine, targetFile);
+      const streamContextFile =
+        targetFile ??
+        (normalizedIntent === "summarize"
+          ? getWorkspaceFile(room.workspace, room.workspace.activeFileId)
+          : null);
+      const streamPrompt =
+        normalizedIntent === "summarize"
+          ? normalizedContent ||
+            "Summarize this workspace: main files, their roles, and how they fit together. Be concise."
+          : normalizedContent;
 
-      if (!targetFile) {
+      if ((normalizedIntent === "edit" || normalizedIntent === "explain") && !targetFile) {
         emitAiProposalError(
           normalizedRoomId,
           userId,
-          "The active file was not found in this session.",
+          "Open a file before using this AI action.",
         );
         return;
       }
@@ -1049,25 +1418,141 @@ io.on("connection", (socket) => {
         channel: "private",
         authorType: "user",
         authorName: socket.data.participantName ?? socket.id,
-        content: normalizedContent,
+        content:
+          normalizedIntent === "summarize" && !normalizedContent
+            ? "Summarize project"
+            : normalizedContent,
         userId,
-        fileId: targetFile.id,
+        fileId: targetFile?.id ?? streamContextFile?.id ?? null,
       });
 
       roomStore.addPrivateChatMessage(normalizedRoomId, userId, userMessage);
       emitPrivateChatMessage(normalizedRoomId, userId, userMessage);
 
       try {
-        const suggestion = await generateGeminiEditProposal({
-          prompt: normalizedContent,
-          file: targetFile,
+        const streamedReply = await streamPrivateAiReplyMessage({
+          roomId: normalizedRoomId,
+          userId,
+          prompt: streamPrompt,
           workspace: room.workspace,
+          file: streamContextFile,
+          mode: normalizedMode,
+          cursorLine: normalizedCursorLine,
+          selection: normalizedSelection,
+          initialContent:
+            normalizedIntent === "generate-files"
+              ? "Gemini is planning the workspace changes..."
+              : normalizedIntent === "explain"
+                ? `Gemini is reading ${targetFile?.path ?? "the current file"}...`
+                : normalizedIntent === "summarize"
+                  ? "Gemini is summarizing the workspace..."
+                  : normalizedMode === "next-line"
+                    ? `Gemini is drafting a local continuation for ${targetFile?.path ?? "the current file"}...`
+                    : `Gemini is reviewing ${targetFile?.path ?? "the current file"} and drafting the edit plan...`,
+        });
+
+        if (!streamedReply) {
+          return;
+        }
+
+        if (normalizedIntent === "explain" && targetFile) {
+          return;
+        }
+
+        if (normalizedIntent === "summarize") {
+          return;
+        }
+
+        const latestRoom = roomStore.getRoom(normalizedRoomId) ?? room;
+        const latestTargetFile =
+          normalizedFileId.length > 0
+            ? getWorkspaceFile(latestRoom.workspace, normalizedFileId)
+            : null;
+
+        if (normalizedIntent === "generate-files") {
+          const generation = await generateGeminiWorkspaceGeneration({
+            prompt: normalizedContent,
+            workspace: latestRoom.workspace,
+            file: latestTargetFile,
+            selection: normalizedSelection,
+          });
+          const mergeResult = roomStore.mergeGeneratedFiles(
+            normalizedRoomId,
+            generation.files,
+            {
+              snapshotLabel: "AI-generated files",
+            },
+          );
+
+          if (!mergeResult || !mergeResult.changed) {
+            emitAiProposalError(
+              normalizedRoomId,
+              userId,
+              "Gemini did not produce any usable files for this workspace.",
+            );
+            return;
+          }
+
+          emitWorkspaceTree(normalizedRoomId, mergeResult.room.workspace);
+          emitWorkspaceView(
+            normalizedRoomId,
+            mergeResult.room.workspace.activeFileId,
+            mergeResult.room.workspace.openFileIds,
+          );
+
+          if (mergeResult.snapshot) {
+            emitSnapshotCreated(normalizedRoomId, mergeResult.snapshot);
+          }
+
+          await sessionTerminalManager.syncWorkspace(
+            normalizedRoomId,
+            mergeResult.room.workspace,
+          );
+
+          const touchedPaths = generation.files
+            .slice(0, 6)
+            .map((entry) => entry.path)
+            .join(", ");
+          const aiMessage = buildChatMessage({
+            roomId: normalizedRoomId,
+            channel: "private",
+            authorType: "ai",
+            authorName: "Gemini",
+            content: `${generation.explanation} Created or updated ${generation.files.length} file(s): ${touchedPaths}${generation.files.length > 6 ? ", ..." : ""}.`,
+            userId,
+            fileId: latestTargetFile?.id ?? null,
+          });
+
+          roomStore.addPrivateChatMessage(normalizedRoomId, userId, aiMessage);
+          emitPrivateChatMessage(normalizedRoomId, userId, aiMessage);
+          return;
+        }
+
+        if (!latestTargetFile) {
+          emitAiProposalError(
+            normalizedRoomId,
+            userId,
+            "Open a file before requesting AI edits.",
+          );
+          return;
+        }
+
+        const effectivePrompt = normalizedSelection
+          ? `${normalizedContent}\n\nSelection context (${normalizedSelection.startLineNumber}-${normalizedSelection.endLineNumber}):\n${normalizedSelection.selectedText}`
+          : normalizedContent;
+        const suggestion = await generateGeminiEditProposal({
+          prompt: effectivePrompt,
+          file: latestTargetFile,
+          workspace: latestRoom.workspace,
+          mode: normalizedMode,
+          cursorLine: normalizeAiCursorLine(cursorLine, latestTargetFile),
+          selection: normalizedSelection,
         });
         const proposal = buildAiEditProposal(
           normalizedRoomId,
           userId,
           socket.data.participantName ?? socket.id,
-          targetFile,
+          latestTargetFile,
           normalizedContent,
           suggestion,
         );
@@ -1093,7 +1578,7 @@ io.on("connection", (socket) => {
           authorName: "Gemini",
           content: `I prepared ${createdProposal.changes.length} reviewable line changes for ${createdProposal.filePath}. Approve the changes you want, then apply them to the shared file.`,
           userId,
-          fileId: targetFile.id,
+          fileId: latestTargetFile.id,
         });
 
         roomStore.addPrivateChatMessage(normalizedRoomId, userId, aiMessage);
@@ -1111,7 +1596,7 @@ io.on("connection", (socket) => {
           authorName: "AI System",
           content: message,
           userId,
-          fileId: normalizedFileId,
+          fileId: targetFile?.id ?? null,
         });
 
         roomStore.addPrivateChatMessage(normalizedRoomId, userId, aiErrorMessage);
@@ -1602,6 +2087,57 @@ io.on("connection", (socket) => {
   );
 
   socket.on(
+    "workspace:create:template",
+    async ({ roomId, template }: WorkspaceCreateTemplatePayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+
+      if (!isSocketInRoom(socket.data.roomId, normalizedRoomId)) {
+        return;
+      }
+
+      const templateDefinition = getWorkspaceTemplate(template);
+
+      if (!templateDefinition) {
+        return;
+      }
+
+      const mergeResult = roomStore.mergeGeneratedFiles(
+        normalizedRoomId,
+        templateDefinition.files,
+        {
+          snapshotLabel: `${templateDefinition.label} added`,
+        },
+      );
+
+      if (!mergeResult || !mergeResult.changed) {
+        return;
+      }
+
+      emitWorkspaceTree(normalizedRoomId, mergeResult.room.workspace);
+      emitWorkspaceView(
+        normalizedRoomId,
+        mergeResult.room.workspace.activeFileId,
+        mergeResult.room.workspace.openFileIds,
+      );
+
+      if (mergeResult.snapshot) {
+        emitSnapshotCreated(normalizedRoomId, mergeResult.snapshot);
+      }
+
+      await sessionTerminalManager.syncWorkspace(
+        normalizedRoomId,
+        mergeResult.room.workspace,
+      );
+
+      roomTerminal.appendText(
+        normalizedRoomId,
+        "system",
+        `${templateDefinition.label} added to this session.`,
+      );
+    },
+  );
+
+  socket.on(
     "workspace:rename",
     async ({ roomId, nodeId, newName }: WorkspaceRenamePayload) => {
       const normalizedRoomId = normalizeRoomId(roomId);
@@ -1812,6 +2348,37 @@ io.on("connection", (socket) => {
         activeFileId: result.room.workspace.activeFileId,
         openFileIds: result.room.workspace.openFileIds,
       });
+    },
+  );
+
+  socket.on(
+    "session:comment:add",
+    ({ roomId, fileId, lineNumber, body }: SessionCommentAddPayload) => {
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedFileId = fileId?.trim() ?? "";
+      const normalizedBody = body?.trim() ?? "";
+
+      if (
+        !isSocketInRoom(socket.data.roomId, normalizedRoomId) ||
+        !normalizedFileId ||
+        !normalizedBody
+      ) {
+        return;
+      }
+
+      const comment = roomStore.addSessionComment(normalizedRoomId, {
+        fileId: normalizedFileId,
+        lineNumber: lineNumber ?? 0,
+        body: normalizedBody,
+        authorName: socket.data.participantName ?? socket.id,
+        userId: socket.data.userId?.trim() ?? socket.id,
+      });
+
+      if (!comment) {
+        return;
+      }
+
+      io.to(normalizedRoomId).emit("session:comment:created", { comment });
     },
   );
 

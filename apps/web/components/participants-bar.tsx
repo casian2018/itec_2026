@@ -25,16 +25,16 @@ export function ParticipantsBar({
   const isSoloRoom = participants.length <= 1;
 
   return (
-    <section className="border-b border-[var(--line)] bg-[var(--titlebar-bg)] px-3 py-2">
+    <section className="border-b border-[var(--line)] bg-[var(--titlebar-bg)] px-4 py-3 backdrop-blur-xl">
       <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
-            Session
+            Team Presence
           </p>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
             {isSoloRoom
               ? "Only your client is connected to this workspace."
-              : "Connected collaborators in the current workspace."}
+              : "Connected collaborators currently inside this shared session."}
           </p>
         </div>
 
@@ -50,14 +50,14 @@ export function ParticipantsBar({
             return (
               <div
                 key={participant.socketId}
-                className={`inline-flex h-8 items-center gap-2 border px-2.5 ${
+                className={`inline-flex h-9 items-center gap-2 rounded-full border px-3 ${
                   isCurrentUser
                     ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--text-primary)]"
                     : "border-[rgba(148,163,184,0.12)] bg-[var(--bg-panel-soft)] text-[var(--text-secondary)]"
                 }`}
               >
                 <span
-                  className={`flex h-5 w-5 items-center justify-center border font-mono text-[10px] ${
+                  className={`flex h-6 w-6 items-center justify-center rounded-full border font-mono text-[10px] ${
                     isCurrentUser
                       ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]"
                       : "border-[var(--line)] bg-[var(--surface-chip)] text-[var(--text-muted)]"
@@ -67,7 +67,7 @@ export function ParticipantsBar({
                 </span>
                 <span className="text-xs font-medium">{displayName}</span>
                 {isCurrentUser ? (
-                  <span className="border border-[var(--line)] bg-[var(--surface-chip)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
+                  <span className="rounded-full border border-[var(--line)] bg-[var(--surface-chip)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
                     You
                   </span>
                 ) : null}

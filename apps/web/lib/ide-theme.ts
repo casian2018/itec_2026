@@ -4,7 +4,7 @@ import type { editor as MonacoEditor } from "monaco-editor";
 
 export const IDE_THEME_STORAGE_KEY = "itecify-ide-theme";
 
-export type IdeThemeId = "dark" | "light" | "github" | "neon";
+export type IdeThemeId = "dark" | "light" | "github" | "neon" | "itecify";
 
 export type IdeThemeDefinition = {
   id: IdeThemeId;
@@ -42,9 +42,15 @@ export const IDE_THEMES: IdeThemeDefinition[] = [
     description: "Purple hacker aesthetic for demos.",
     monacoTheme: "itecify-neon",
   },
+  {
+    id: "itecify",
+    label: "iTECify",
+    description: "Teal collaborative workspace chrome (default for /dev sessions).",
+    monacoTheme: "itecify-itecify",
+  },
 ];
 
-const DEFAULT_IDE_THEME_ID: IdeThemeId = "dark";
+const DEFAULT_IDE_THEME_ID: IdeThemeId = "itecify";
 
 const monacoThemes: MonacoThemeMap = {
   dark: {
@@ -141,6 +147,31 @@ const monacoThemes: MonacoThemeMap = {
       "editorGutter.background": "#0f0820",
       "editorIndentGuide.background1": "#2a1745",
       "editorIndentGuide.activeBackground1": "#55307f",
+    },
+  },
+  itecify: {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "comment", foreground: "3d4560" },
+      { token: "keyword", foreground: "8b7cf8" },
+      { token: "string", foreground: "7ecb95" },
+      { token: "number", foreground: "e8a23a" },
+      { token: "type.identifier", foreground: "e07b8a" },
+      { token: "function", foreground: "57a6f0" },
+    ],
+    colors: {
+      "editor.background": "#0b0d12",
+      "editor.foreground": "#e8eaf2",
+      "editor.lineHighlightBackground": "#13161f",
+      "editor.selectionBackground": "rgba(78, 205, 196, 0.22)",
+      "editor.inactiveSelectionBackground": "rgba(78, 205, 196, 0.12)",
+      "editorCursor.foreground": "#4ecdc4",
+      "editorLineNumber.foreground": "#3d4259",
+      "editorLineNumber.activeForeground": "#a8abbe",
+      "editorGutter.background": "#0b0d12",
+      "editorIndentGuide.background1": "#242840",
+      "editorIndentGuide.activeBackground1": "#3d4259",
     },
   },
 };

@@ -7,6 +7,8 @@ import type {
   Participant,
   RoomSnapshot,
   RoomState,
+  SessionActivityEvent,
+  SessionComment,
   TerminalEntry,
   WorkspaceFileLanguage,
   WorkspaceFileNode,
@@ -27,6 +29,7 @@ import {
   getWorkspaceFile,
   getPreviewFiles,
   insertCodeIntoWorkspaceFile,
+  mergeGeneratedFilesIntoWorkspace,
   moveWorkspaceNode,
   renameWorkspaceNode,
   serializeWorkspace,
@@ -46,6 +49,8 @@ type StoredRoom = {
   sharedChatMessages: ChatMessage[];
   privateChatMessages: Map<string, ChatMessage[]>;
   privateAiProposals: Map<string, AiEditProposal[]>;
+  activityFeed: SessionActivityEvent[];
+  sessionComments: SessionComment[];
   emptySince: string | null;
 };
 
@@ -100,6 +105,8 @@ export type JoinRoomResult = {
 
 const MAX_ROOM_SNAPSHOTS = 12;
 const MAX_TERMINAL_ENTRIES = 600;
+const MAX_SESSION_ACTIVITY = 80;
+const MAX_SESSION_COMMENTS = 200;
 const MAX_SHARED_CHAT_MESSAGES = 200;
 const MAX_PRIVATE_CHAT_MESSAGES = 120;
 const MAX_PRIVATE_AI_PROPOSALS = 24;
@@ -116,6 +123,77 @@ export class RoomStore {
   getRoom(roomId: string) {
     const room = this.rooms.get(roomId);
     return room ? this.toRoomState(room) : null;
+  }
+
+  appendActivity(
+    roomId: string,
+    partial: Omit<SessionActivityEvent, "id" | "roomId" | "createdAt">,
+  ): SessionActivityEvent | null {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const event: SessionActivityEvent = {
+      id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      roomId,
+      kind: partial.kind,
+      message: partial.message,
+      actorName: partial.actorName,
+      createdAt: new Date().toISOString(),
+    };
+
+    const previousFeed = room.activityFeed ?? [];
+    room.activityFeed = [event, ...previousFeed].slice(0, MAX_SESSION_ACTIVITY);
+    return event;
+  }
+
+  addSessionComment(
+    roomId: string,
+    input: {
+      fileId: string;
+      lineNumber: number;
+      body: string;
+      authorName: string;
+      userId: string;
+    },
+  ): SessionComment | null {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const file = getWorkspaceFile(room.workspace, input.fileId);
+
+    if (!file) {
+      return null;
+    }
+
+    const body = input.body.trim().slice(0, 4000);
+
+    if (!body) {
+      return null;
+    }
+
+    const comment: SessionComment = {
+      id: `cmt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      roomId,
+      fileId: input.fileId,
+      lineNumber: Math.max(0, Math.floor(input.lineNumber)),
+      body,
+      authorName: input.authorName,
+      userId: input.userId,
+      createdAt: new Date().toISOString(),
+    };
+
+    const previousComments = room.sessionComments ?? [];
+    room.sessionComments = [comment, ...previousComments].slice(
+      0,
+      MAX_SESSION_COMMENTS,
+    );
+    return comment;
   }
 
   createRoom(roomId: string) {
@@ -590,6 +668,46 @@ export class RoomStore {
     };
   }
 
+  mergeGeneratedFiles(
+    roomId: string,
+    files: Array<{ path: string; content: string }>,
+    options?: {
+      snapshotLabel?: string;
+    },
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const result = mergeGeneratedFilesIntoWorkspace(room.workspace, files);
+
+    if (!result.changed) {
+      return {
+        room: this.toRoomState(room),
+        changed: false,
+        touchedFileIds: [],
+        snapshot: null,
+      };
+    }
+
+    room.workspace = result.workspace;
+
+    const snapshot = this.captureSnapshot(
+      room,
+      options?.snapshotLabel ?? "AI-generated files",
+      true,
+    );
+
+    return {
+      room: this.toRoomState(room),
+      changed: true,
+      touchedFileIds: result.touchedFileIds,
+      snapshot,
+    };
+  }
+
   addAiBlock(roomId: string, block: AiBlock) {
     const room = this.rooms.get(roomId);
 
@@ -637,6 +755,36 @@ export class RoomStore {
     return message;
   }
 
+  updateSharedChatMessage(roomId: string, messageId: string, content: string) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    let nextMessage: ChatMessage | null = null;
+
+    room.sharedChatMessages = room.sharedChatMessages.map((message) => {
+      if (message.id !== messageId) {
+        return message;
+      }
+
+      if (message.content === content) {
+        nextMessage = message;
+        return message;
+      }
+
+      nextMessage = {
+        ...message,
+        content,
+      };
+
+      return nextMessage;
+    });
+
+    return nextMessage;
+  }
+
   getPrivateChatMessages(roomId: string, userId: string) {
     const room = this.rooms.get(roomId);
 
@@ -662,6 +810,44 @@ export class RoomStore {
     room.privateChatMessages.set(userId, nextMessages);
 
     return message;
+  }
+
+  updatePrivateChatMessage(
+    roomId: string,
+    userId: string,
+    messageId: string,
+    content: string,
+  ) {
+    const room = this.rooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
+
+    const messages = room.privateChatMessages.get(userId) ?? [];
+    let nextMessage: ChatMessage | null = null;
+
+    const nextMessages = messages.map((message) => {
+      if (message.id !== messageId) {
+        return message;
+      }
+
+      if (message.content === content) {
+        nextMessage = message;
+        return message;
+      }
+
+      nextMessage = {
+        ...message,
+        content,
+      };
+
+      return nextMessage;
+    });
+
+    room.privateChatMessages.set(userId, nextMessages);
+
+    return nextMessage;
   }
 
   getPrivateAiProposals(roomId: string, userId: string) {
@@ -1074,6 +1260,8 @@ export class RoomStore {
       sharedChatMessages: [],
       privateChatMessages: new Map(),
       privateAiProposals: new Map(),
+      activityFeed: [],
+      sessionComments: [],
       emptySince: null,
     };
     this.rooms.set(roomId, room);
@@ -1101,6 +1289,10 @@ export class RoomStore {
         workspace: cloneWorkspaceState(snapshot.workspace),
       })),
       terminalEntries: [...room.terminalEntries].reverse(),
+      activityFeed: [...(room.activityFeed ?? [])],
+      sessionComments: [...(room.sessionComments ?? [])].sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt),
+      ),
     };
   }
 

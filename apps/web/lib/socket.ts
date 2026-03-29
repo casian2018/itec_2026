@@ -25,6 +25,12 @@ export type WorkspaceFileLanguage =
   | "plaintext";
 
 export type ExecutionRuntime = "javascript" | "python" | "c" | "cpp";
+export type WorkspaceTemplateKind =
+  | "python-starter"
+  | "cpp-starter"
+  | "html-css-starter"
+  | "readme-starter"
+  | "json-config-starter";
 
 export type WorkspaceFolderNode = {
   id: string;
@@ -112,6 +118,13 @@ export type AiEditProposal = {
 
 export type ChatChannel = "shared" | "private";
 export type ChatAuthorType = "user" | "ai" | "system";
+export type AiAssistantIntent = "edit" | "explain" | "generate-files" | "summarize";
+
+export type AiSelectionContext = {
+  startLineNumber: number;
+  endLineNumber: number;
+  selectedText: string;
+};
 
 export type ChatMessage = {
   id: string;
@@ -144,6 +157,26 @@ export type TerminalEntry = {
   authorName?: string;
 };
 
+export type SessionActivityEvent = {
+  id: string;
+  roomId: string;
+  kind: "join" | "leave";
+  message: string;
+  actorName?: string;
+  createdAt: string;
+};
+
+export type SessionComment = {
+  id: string;
+  roomId: string;
+  fileId: string;
+  lineNumber: number;
+  body: string;
+  authorName: string;
+  userId: string;
+  createdAt: string;
+};
+
 export type RoomState = {
   roomId: string;
   workspace: WorkspaceState;
@@ -152,6 +185,8 @@ export type RoomState = {
   aiBlocks: AiBlock[];
   snapshots: RoomSnapshot[];
   terminalEntries: TerminalEntry[];
+  activityFeed: SessionActivityEvent[];
+  sessionComments: SessionComment[];
 };
 
 export type RemoteCursor = {
@@ -241,6 +276,10 @@ type ClientToServerEvents = {
     roomId: string;
     fileId: string;
   }) => void;
+  "workspace:create:template": (payload: {
+    roomId: string;
+    template: WorkspaceTemplateKind;
+  }) => void;
   "code:run": (payload: { roomId: string; fileId?: string }) => void;
   "snapshot:restore": (payload: { roomId: string; snapshotId: string }) => void;
   "terminal:command": (payload: { roomId: string; command: string }) => void;
@@ -254,8 +293,12 @@ type ClientToServerEvents = {
   "chat:shared:send": (payload: { roomId: string; content: string }) => void;
   "chat:private:send": (payload: {
     roomId: string;
-    fileId: string;
+    fileId?: string | null;
     content: string;
+    intent?: AiAssistantIntent;
+    mode?: AiSuggestionMode;
+    cursorLine?: number | null;
+    selection?: AiSelectionContext | null;
   }) => void;
   "ai:proposal:approve-line": (payload: {
     roomId: string;
@@ -286,6 +329,12 @@ type ClientToServerEvents = {
   }) => void;
   "ai:block:accept": (payload: { roomId: string; blockId: string }) => void;
   "ai:block:reject": (payload: { roomId: string; blockId: string }) => void;
+  "session:comment:add": (payload: {
+    roomId: string;
+    fileId: string;
+    lineNumber: number;
+    body: string;
+  }) => void;
 };
 
 type ServerToClientEvents = {
@@ -329,11 +378,13 @@ type ServerToClientEvents = {
     messages: ChatMessage[];
   }) => void;
   "chat:shared:message": (payload: { message: ChatMessage }) => void;
+  "chat:shared:message:updated": (payload: { message: ChatMessage }) => void;
   "chat:private:init": (payload: {
     roomId: string;
     messages: ChatMessage[];
   }) => void;
   "chat:private:message": (payload: { message: ChatMessage }) => void;
+  "chat:private:message:updated": (payload: { message: ChatMessage }) => void;
   "ai:proposal:init": (payload: {
     roomId: string;
     proposals: AiEditProposal[];
@@ -352,6 +403,8 @@ type ServerToClientEvents = {
   "terminal:entry": (payload: { entry: TerminalEntry }) => void;
   "terminal:clear": (payload: { roomId: string; clearedBy: string }) => void;
   "terminal:systemMessage": (payload: { entry: TerminalEntry }) => void;
+  "session:activity": (payload: SessionActivityEvent) => void;
+  "session:comment:created": (payload: { comment: SessionComment }) => void;
 };
 
 export type ItecifySocket = Socket<ServerToClientEvents, ClientToServerEvents>;

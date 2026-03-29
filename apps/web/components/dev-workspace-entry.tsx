@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { SessionEntryPanel } from "@/components/session-entry-panel";
 import {
+  ExperiencePanel,
+  ExperiencePill,
+  ExperienceShell,
+} from "@/components/experience-shell";
+import {
   buildDevSessionUrl,
   createSession,
   isValidSessionCode,
@@ -29,56 +34,48 @@ function EntryStatus({
   displayName: string;
 }) {
   return (
-    <main className="flex h-full min-h-0 overflow-y-auto overflow-x-hidden p-4 lg:p-6">
-      <div className="mx-auto flex min-h-full w-full max-w-[1180px] items-center justify-center">
-        <section className="w-full max-w-[680px] rounded-[32px] border border-[var(--line)] bg-[var(--bg-elevated)] p-8 shadow-[0_36px_140px_rgba(0,0,0,0.42)] backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <span className="inline-flex rounded-full border border-[rgba(82,199,184,0.2)] bg-[rgba(82,199,184,0.08)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.34em] text-[var(--accent)]">
-              iTECify
-            </span>
-            <span className="rounded-full border border-cyan-400/14 bg-cyan-400/10 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-300">
-              IDE session
-            </span>
+    <ExperienceShell>
+      <div className="flex min-h-full items-center justify-center">
+        <ExperiencePanel className="w-full max-w-[720px] p-8">
+          <div className="flex flex-wrap items-center gap-3">
+            <ExperiencePill>IDE Session</ExperiencePill>
+            <ExperiencePill tone="accent">Workspace Handoff</ExperiencePill>
           </div>
 
-          <h1 className="mt-6 text-3xl font-semibold tracking-[-0.04em] text-white">
+          <h1 className="mt-6 font-serif text-4xl font-semibold tracking-[-0.05em] text-white">
             {title}
           </h1>
-          <p className="mt-3 text-sm leading-7 text-[var(--text-muted)]">
-            {detail}
-          </p>
+          <p className="mt-4 text-sm leading-7 text-muted-foreground">{detail}</p>
 
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl border border-[rgba(148,163,184,0.1)] bg-white/[0.03] px-4 py-4">
-              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+            <div className="rounded-[24px] border border-border/30 bg-white/[0.04] px-4 py-4">
+              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
                 Display Name
               </p>
-              <p className="mt-2 text-sm font-semibold text-white">
-                {displayName}
-              </p>
+              <p className="mt-2 text-sm font-semibold text-white">{displayName}</p>
             </div>
 
-            <div className="rounded-2xl border border-[rgba(148,163,184,0.1)] bg-white/[0.03] px-4 py-4">
-              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+            <div className="rounded-[24px] border border-border/30 bg-white/[0.04] px-4 py-4">
+              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
                 Session
               </p>
               <p className="mt-2 font-mono text-sm text-white">{sessionCode}</p>
             </div>
           </div>
 
-          <div className="mt-6 rounded-2xl border border-[rgba(82,199,184,0.14)] bg-[rgba(82,199,184,0.08)] px-4 py-4">
-            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
+          <div className="mt-6 rounded-[24px] border border-primary/18 bg-primary/10 px-4 py-4">
+            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
               Workspace Handoff
             </p>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-              Lightweight identity, then isolated collaborative IDE session.
-              Each session code hydrates its own in-memory workspace, participants,
-              preview state, files, and terminal activity.
+            <p className="mt-2 text-sm leading-6 text-[rgb(230,223,255)]">
+              Lightweight identity, then isolated collaborative IDE session. Each session code
+              hydrates its own in-memory workspace, participants, preview state, files, and
+              terminal activity.
             </p>
           </div>
-        </section>
+        </ExperiencePanel>
       </div>
-    </main>
+    </ExperienceShell>
   );
 }
 

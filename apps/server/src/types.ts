@@ -23,6 +23,12 @@ export type WorkspaceFileLanguage =
 
 export type ExecutionRuntime = "javascript" | "python" | "c" | "cpp";
 export type IdeThemeId = "dark" | "light" | "github" | "neon";
+export type WorkspaceTemplateKind =
+  | "python-starter"
+  | "cpp-starter"
+  | "html-css-starter"
+  | "readme-starter"
+  | "json-config-starter";
 
 export type WorkspaceFolderNode = {
   id: string;
@@ -110,6 +116,13 @@ export type AiEditProposal = {
 
 export type ChatChannel = "shared" | "private";
 export type ChatAuthorType = "user" | "ai" | "system";
+export type AiAssistantIntent = "edit" | "explain" | "generate-files" | "summarize";
+
+export type AiSelectionContext = {
+  startLineNumber: number;
+  endLineNumber: number;
+  selectedText: string;
+};
 
 export type ChatMessage = {
   id: string;
@@ -142,6 +155,26 @@ export type TerminalEntry = {
   authorName?: string;
 };
 
+export type SessionActivityEvent = {
+  id: string;
+  roomId: string;
+  kind: "join" | "leave";
+  message: string;
+  actorName?: string;
+  createdAt: string;
+};
+
+export type SessionComment = {
+  id: string;
+  roomId: string;
+  fileId: string;
+  lineNumber: number;
+  body: string;
+  authorName: string;
+  userId: string;
+  createdAt: string;
+};
+
 export type RoomState = {
   roomId: string;
   workspace: WorkspaceState;
@@ -150,6 +183,8 @@ export type RoomState = {
   aiBlocks: AiBlock[];
   snapshots: RoomSnapshot[];
   terminalEntries: TerminalEntry[];
+  activityFeed: SessionActivityEvent[];
+  sessionComments: SessionComment[];
 };
 
 export type JoinRoomPayload = {
@@ -249,8 +284,12 @@ export type SharedChatSendPayload = {
 
 export type PrivateChatSendPayload = {
   roomId: string;
-  fileId: string;
+  fileId?: string | null;
   content: string;
+  intent?: AiAssistantIntent;
+  mode?: AiSuggestionMode;
+  cursorLine?: number | null;
+  selection?: AiSelectionContext | null;
 };
 
 export type AiProposalLineActionPayload = {
@@ -340,6 +379,18 @@ export type WorkspaceCloseTabPayload = {
   fileId: string;
 };
 
+export type WorkspaceCreateTemplatePayload = {
+  roomId: string;
+  template: WorkspaceTemplateKind;
+};
+
+export type SessionCommentAddPayload = {
+  roomId: string;
+  fileId: string;
+  lineNumber: number;
+  body: string;
+};
+
 export type RunOutputStream = "stdout" | "stderr";
 
 export type RunOutputPayload = {
@@ -373,6 +424,7 @@ export type ClientToServerEvents = {
   "workspace:move": (payload: WorkspaceMovePayload) => void;
   "workspace:file:format": (payload: WorkspaceFormatPayload) => void;
   "workspace:tab:close": (payload: WorkspaceCloseTabPayload) => void;
+  "workspace:create:template": (payload: WorkspaceCreateTemplatePayload) => void;
   "cursor:update": (payload: CursorUpdatePayload) => void;
   "execution:run": (payload: ExecutionRunPayload) => void;
   "code:run": (payload: CodeRunPayload) => void;
@@ -389,6 +441,7 @@ export type ClientToServerEvents = {
   "ai:block:create": (payload: AiBlockCreatePayload) => void;
   "ai:block:accept": (payload: AiBlockActionPayload) => void;
   "ai:block:reject": (payload: AiBlockActionPayload) => void;
+  "session:comment:add": (payload: SessionCommentAddPayload) => void;
 };
 
 export type ServerToClientEvents = {
@@ -415,8 +468,10 @@ export type ServerToClientEvents = {
   "run:done": (payload: RunDonePayload) => void;
   "chat:shared:init": (payload: { roomId: string; messages: ChatMessage[] }) => void;
   "chat:shared:message": (payload: { message: ChatMessage }) => void;
+  "chat:shared:message:updated": (payload: { message: ChatMessage }) => void;
   "chat:private:init": (payload: { roomId: string; messages: ChatMessage[] }) => void;
   "chat:private:message": (payload: { message: ChatMessage }) => void;
+  "chat:private:message:updated": (payload: { message: ChatMessage }) => void;
   "ai:proposal:init": (payload: { roomId: string; proposals: AiEditProposal[] }) => void;
   "ai:proposal:created": (payload: { proposal: AiEditProposal }) => void;
   "ai:proposal:updated": (payload: { proposal: AiEditProposal }) => void;
@@ -435,6 +490,8 @@ export type ServerToClientEvents = {
     clearedBy: string;
   }) => void;
   "terminal:systemMessage": (payload: { entry: TerminalEntry }) => void;
+  "session:activity": (payload: SessionActivityEvent) => void;
+  "session:comment:created": (payload: { comment: SessionComment }) => void;
 };
 
 export type InterServerEvents = Record<string, never>;

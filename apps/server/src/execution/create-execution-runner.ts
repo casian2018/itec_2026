@@ -21,6 +21,12 @@ type ExecutionRunnerDependencies = {
   emitWorkspacePreview: (roomId: string, preview: WorkspacePreviewState) => void;
   emitSnapshotCreated: (roomId: string, snapshot: RoomSnapshot) => void;
   createRunId: () => string;
+  explainFailedRun?: (args: {
+    roomId: string;
+    file: NonNullable<ReturnType<typeof getWorkspaceFile>>;
+    stdout: string;
+    stderr: string;
+  }) => Promise<void>;
 };
 
 function buildDonePayload(
@@ -48,6 +54,7 @@ export function createExecutionRunner({
   emitWorkspacePreview,
   emitSnapshotCreated,
   createRunId,
+  explainFailedRun,
 }: ExecutionRunnerDependencies) {
   async function handleExecutionRun({ roomId, fileId }: ExecutionRunPayload) {
     const normalizedFileId = fileId?.trim();
@@ -122,6 +129,9 @@ export function createExecutionRunner({
     }
 
     try {
+      let stdout = "";
+      let stderr = "";
+
       const preRunSnapshot = roomStore.updateFileContent(
         roomId,
         targetFile.id,
@@ -147,6 +157,12 @@ export function createExecutionRunner({
         runId,
         file: targetFile,
         onOutput: (payload) => {
+          if (payload.stream === "stdout") {
+            stdout += payload.chunk;
+          } else {
+            stderr += payload.chunk;
+          }
+
           emitExecutionOutput(roomId, payload);
           terminal.appendText(roomId, payload.stream, payload.chunk);
         },
@@ -171,6 +187,19 @@ export function createExecutionRunner({
           ? `✓ ${targetFile.path} finished with exit code ${result.done.exitCode}`
           : `✕ ${targetFile.path} failed with exit code ${result.done.exitCode}`,
       );
+
+      if (
+        result.done.status === "failed" &&
+        stderr.trim().length > 0 &&
+        explainFailedRun
+      ) {
+        await explainFailedRun({
+          roomId,
+          file: targetFile,
+          stdout,
+          stderr,
+        });
+      }
     } catch (error) {
       const message =
         error instanceof Error
@@ -187,6 +216,15 @@ export function createExecutionRunner({
         timestamp: new Date().toISOString(),
       });
       emitExecutionDone(roomId, donePayload);
+
+      if (explainFailedRun) {
+        await explainFailedRun({
+          roomId,
+          file: targetFile,
+          stdout: "",
+          stderr: message,
+        });
+      }
     } finally {
       executionState.finishRun(roomId, runId);
     }

@@ -838,6 +838,178 @@ function generateId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function cloneNode(node: WorkspaceNode): WorkspaceNode {
+  return node.kind === "file" ? { ...node } : { ...node };
+}
+
+function pathParts(path: string) {
+  return path.split("/").filter(Boolean);
+}
+
+function parentPathFor(path: string) {
+  const parts = pathParts(path);
+  return parts.slice(0, -1).join("/");
+}
+
+function ensureGeneratedFolderPath(
+  nodes: WorkspaceNode[],
+  path: string,
+  existingByPath: Map<string, WorkspaceNode>,
+) {
+  const parts = pathParts(path);
+  let currentPath = "";
+  let parentId: string | null = null;
+
+  for (const part of parts) {
+    currentPath = currentPath ? `${currentPath}/${part}` : part;
+    const existingNode = existingByPath.get(currentPath);
+
+    if (existingNode) {
+      if (existingNode.kind !== "folder") {
+        return null;
+      }
+
+      parentId = existingNode.id;
+      continue;
+    }
+
+    const folder = createFolder(
+      generateId("folder"),
+      part,
+      parentId,
+      currentPath,
+    );
+    nodes.push(folder);
+    existingByPath.set(folder.path, folder);
+    parentId = folder.id;
+  }
+
+  return parentId;
+}
+
+export function mergeGeneratedFilesIntoWorkspace(
+  workspace: WorkspaceState,
+  files: Array<{ path: string; content: string }>,
+) {
+  const nodes = workspace.nodes.map(cloneNode);
+  const existingByPath = new Map(nodes.map((node) => [node.path, node] as const));
+  const touchedFileIds: string[] = [];
+  let changed = false;
+
+  for (const entry of files) {
+    const normalizedPath = entry.path.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+
+    if (!normalizedPath || normalizedPath.includes("..")) {
+      continue;
+    }
+
+    const fileName = normalizedPath.split("/").pop();
+
+    if (!fileName) {
+      continue;
+    }
+
+    const parentPath = parentPathFor(normalizedPath);
+    const parentId = ensureGeneratedFolderPath(nodes, parentPath, existingByPath);
+
+    if (parentPath && parentId === null) {
+      continue;
+    }
+
+    const language = inferLanguageFromExtension(fileName);
+    const executionRuntime = executionRuntimeForLanguage(language);
+    const normalizedContent = entry.content.replace(/\r\n/g, "\n");
+    const existingNode = existingByPath.get(normalizedPath);
+
+    if (existingNode?.kind === "file") {
+      if (
+        existingNode.content === normalizedContent &&
+        existingNode.language === language &&
+        existingNode.executionRuntime === executionRuntime
+      ) {
+        touchedFileIds.push(existingNode.id);
+        continue;
+      }
+
+      const nextFile: WorkspaceFileNode = {
+        ...existingNode,
+        name: fileName,
+        parentId: parentId ?? null,
+        path: normalizedPath,
+        language,
+        content: normalizedContent,
+        executionRuntime,
+      };
+      const nodeIndex = nodes.findIndex((node) => node.id === existingNode.id);
+
+      if (nodeIndex >= 0) {
+        nodes[nodeIndex] = nextFile;
+        existingByPath.set(normalizedPath, nextFile);
+        touchedFileIds.push(nextFile.id);
+        changed = true;
+      }
+
+      continue;
+    }
+
+    if (existingNode?.kind === "folder") {
+      continue;
+    }
+
+    const nextFile = createFile(
+      generateId("file"),
+      fileName,
+      parentId ?? null,
+      normalizedPath,
+      language,
+      normalizedContent,
+      executionRuntime,
+    );
+
+    nodes.push(nextFile);
+    existingByPath.set(normalizedPath, nextFile);
+    touchedFileIds.push(nextFile.id);
+    changed = true;
+  }
+
+  if (!changed && touchedFileIds.length === 0) {
+    return {
+      workspace,
+      changed: false,
+      touchedFileIds: [],
+    };
+  }
+
+  const validFileIds = new Set(
+    nodes.filter((node): node is WorkspaceFileNode => node.kind === "file").map((node) => node.id),
+  );
+  const nextActiveFileId =
+    workspace.activeFileId && validFileIds.has(workspace.activeFileId)
+      ? workspace.activeFileId
+      : touchedFileIds[0] ?? "";
+  const nextOpenFileIds = [
+    ...workspace.openFileIds.filter((fileId) => validFileIds.has(fileId)),
+    ...touchedFileIds,
+  ].filter(
+    (fileId, index, collection) =>
+      validFileIds.has(fileId) && collection.indexOf(fileId) === index,
+  );
+
+  if (nextActiveFileId && !nextOpenFileIds.includes(nextActiveFileId)) {
+    nextOpenFileIds.unshift(nextActiveFileId);
+  }
+
+  return {
+    workspace: {
+      nodes: sortNodes(nodes),
+      activeFileId: nextActiveFileId,
+      openFileIds: nextOpenFileIds.slice(0, 6),
+    },
+    changed: true,
+    touchedFileIds,
+  };
+}
+
 export function createWorkspaceFile(
   workspace: WorkspaceState,
   parentId: string | null,

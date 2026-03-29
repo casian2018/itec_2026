@@ -16,7 +16,19 @@ type PrivateAiChatPanelProps = {
   errorMessage?: string | null;
   canSend: boolean;
   currentUserId: string;
+  selectionSummary?: string | null;
+  hasSelection: boolean;
   onSendPrompt: (content: string) => void;
+  onExplainSelection: () => void;
+  onGenerateFunction: () => void;
+  onRefactorSelection: () => void;
+  onFixBugs: () => void;
+  onAddComments: () => void;
+  onSummarizeProject: () => void;
+  onGenerateFilesFromPrompt: (prompt: string) => void;
+  onGenerateFlaskStarter: () => void;
+  onGenerateCppStarter: () => void;
+  onGenerateLandingPageStarter: () => void;
   onApproveLine: (proposalId: string, changeId: string) => void;
   onRejectLine: (proposalId: string, changeId: string) => void;
   onApplyProposal: (proposalId: string) => void;
@@ -27,6 +39,50 @@ const QUICK_PROMPTS = [
   "Refactor this file for readability and maintainability without changing behavior.",
   "Fix the most obvious issues in this file with the smallest safe changes.",
 ];
+
+const STARTER_PROMPTS = [
+  {
+    id: "flask",
+    label: "Flask Starter",
+    description: "Create a small Flask starter project with routes, templates, and dependencies.",
+  },
+  {
+    id: "cpp-console",
+    label: "C++ Console App",
+    description: "Create a minimal C++ console application with a clean project structure.",
+  },
+  {
+    id: "landing-page",
+    label: "Static Landing Page",
+    description: "Create a static HTML/CSS/JS landing page starter for demos.",
+  },
+] as const;
+
+function QuickActionButton({
+  label,
+  description,
+  disabled = false,
+  onClick,
+}: {
+  label: string;
+  description: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="border border-[var(--line)] bg-[var(--bg-panel-soft)] p-3 text-left transition hover:border-[var(--line-strong)] hover:bg-[var(--editor-tab-hover-bg)] disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <p className="text-xs font-semibold text-[var(--text-primary)]">{label}</p>
+      <p className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
+        {description}
+      </p>
+    </button>
+  );
+}
 
 function formatMessageTime(createdAt: string) {
   return new Date(createdAt).toLocaleTimeString([], {
@@ -238,12 +294,25 @@ export function PrivateAiChatPanel({
   errorMessage,
   canSend,
   currentUserId,
+  selectionSummary,
+  hasSelection,
   onSendPrompt,
+  onExplainSelection,
+  onGenerateFunction,
+  onRefactorSelection,
+  onFixBugs,
+  onAddComments,
+  onSummarizeProject,
+  onGenerateFilesFromPrompt,
+  onGenerateFlaskStarter,
+  onGenerateCppStarter,
+  onGenerateLandingPageStarter,
   onApproveLine,
   onRejectLine,
   onApplyProposal,
 }: PrivateAiChatPanelProps) {
   const [draft, setDraft] = useState("");
+  const [fileGenerationPrompt, setFileGenerationPrompt] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -277,6 +346,19 @@ export function PrivateAiChatPanel({
     submitPrompt(draft);
   }
 
+  function handleGenerateFiles(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const prompt = fileGenerationPrompt.trim();
+
+    if (!prompt || !canSend) {
+      return;
+    }
+
+    onGenerateFilesFromPrompt(prompt);
+    setFileGenerationPrompt("");
+  }
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--sidebar-bg)]">
       <div className="border-b border-[var(--line)] px-3 py-3">
@@ -284,7 +366,7 @@ export function PrivateAiChatPanel({
           Private AI Editing
         </h2>
         <p className="mt-2 text-[12px] leading-5 text-[var(--text-muted)]">
-          Only you see this thread. Ask Gemini to modify the active file, then approve each proposed line change before it touches the shared workspace.
+          Only you see this thread. Gemini replies stream live here, stay saved in your private history, and can still produce explicit line-by-line edits that you approve before anything changes.
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <span className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
@@ -295,6 +377,11 @@ export function PrivateAiChatPanel({
               Proposal ready
             </span>
           ) : null}
+          {selectionSummary ? (
+            <span className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+              {selectionSummary}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -302,6 +389,123 @@ export function PrivateAiChatPanel({
         ref={scrollRef}
         className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3"
       >
+        <section className="border border-[var(--line)] bg-[var(--bg-panel)] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                AI Code Assistant
+              </p>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                Selection-aware editing actions
+              </h3>
+            </div>
+            <span className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+              {hasSelection ? "Selection ready" : "Whole file fallback"}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <QuickActionButton
+              label="Explain Selected Code"
+              description="Get a concise plain-language explanation of the selected code or current file."
+              disabled={!canSend || !activeFile}
+              onClick={onExplainSelection}
+            />
+            <QuickActionButton
+              label="Generate New Function"
+              description="Draft a new function that fits the current file and code context."
+              disabled={!canSend || !activeFile}
+              onClick={onGenerateFunction}
+            />
+            <QuickActionButton
+              label="Refactor Selected Code"
+              description="Turn the selection into explicit reviewable edits for readability and maintainability."
+              disabled={!canSend || !activeFile}
+              onClick={onRefactorSelection}
+            />
+            <QuickActionButton
+              label="Identify And Fix Bugs"
+              description="Ask Gemini to find the most likely issues and propose focused line changes."
+              disabled={!canSend || !activeFile}
+              onClick={onFixBugs}
+            />
+            <QuickActionButton
+              label="Add Explanatory Comments"
+              description="Insert comments where the code is difficult to understand without over-commenting."
+              disabled={!canSend || !activeFile}
+              onClick={onAddComments}
+            />
+            <QuickActionButton
+              label="Summarize project"
+              description="Overview of main files and how they work together across the workspace."
+              disabled={!canSend}
+              onClick={onSummarizeProject}
+            />
+          </div>
+        </section>
+
+        <section className="border border-[var(--line)] bg-[var(--bg-panel)] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                AI File Generator
+              </p>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                Create files and project starters
+              </h3>
+            </div>
+            <span className="border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)]">
+              Shared workspace
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            {STARTER_PROMPTS.map((starter) => (
+              <QuickActionButton
+                key={starter.id}
+                label={starter.label}
+                description={starter.description}
+                disabled={!canSend}
+                onClick={() => {
+                  if (starter.id === "flask") {
+                    onGenerateFlaskStarter();
+                    return;
+                  }
+
+                  if (starter.id === "cpp-console") {
+                    onGenerateCppStarter();
+                    return;
+                  }
+
+                  onGenerateLandingPageStarter();
+                }}
+              />
+            ))}
+          </div>
+
+          <form className="mt-4 space-y-3" onSubmit={handleGenerateFiles}>
+            <label className="block">
+              <span className="text-xs font-semibold text-[var(--text-primary)]">
+                Create files from a natural-language prompt
+              </span>
+              <textarea
+                value={fileGenerationPrompt}
+                onChange={(event) => setFileGenerationPrompt(event.target.value)}
+                rows={3}
+                disabled={!canSend}
+                placeholder="Create a README and unit test starter for the current file."
+                className="mt-2 min-h-[88px] w-full resize-none border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--accent-line)]"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!canSend || fileGenerationPrompt.trim().length === 0}
+              className="h-10 border border-[var(--accent-line)] bg-[var(--accent)] px-4 text-sm font-medium text-[var(--accent-contrast)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:brightness-100"
+            >
+              Generate Files
+            </button>
+          </form>
+        </section>
+
         {errorMessage ? (
           <div className="border border-rose-400/18 bg-rose-400/10 p-4">
             <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-rose-200">

@@ -4,6 +4,15 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
+import {
+  ExperienceFeatureCard,
+  ExperiencePanel,
+  ExperiencePill,
+  ExperienceShell,
+  experienceInputClassName,
+  experiencePrimaryButtonClassName,
+  experienceSecondaryButtonClassName,
+} from "@/components/experience-shell";
 
 type AuthMode = "login" | "register";
 
@@ -86,7 +95,7 @@ function AuthInput({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="mt-2 w-full rounded-2xl border border-[var(--line)] bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[rgba(82,199,184,0.28)] focus:bg-white/[0.04]"
+        className={experienceInputClassName}
       />
       <FieldError message={error} />
     </label>
@@ -163,176 +172,160 @@ export function AuthScreen({ next }: { next?: string }) {
   }
 
   return (
-    <main className="h-full min-h-0 overflow-y-auto p-4 lg:p-6">
-      <div className="mx-auto grid min-h-full max-w-[1320px] gap-6 lg:grid-cols-[minmax(0,1.08fr)_460px]">
-        <section className="relative hidden overflow-hidden rounded-[32px] border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] p-8 shadow-[0_36px_140px_rgba(0,0,0,0.34)] backdrop-blur-xl lg:flex lg:flex-col lg:justify-between">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(82,199,184,0.14),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.08),transparent_28%)]" />
+    <ExperienceShell
+      actions={
+        <Link href="/dev" className={experienceSecondaryButtonClassName}>
+          Open /dev
+        </Link>
+      }
+    >
+      <div className="grid min-h-full gap-8 lg:grid-cols-[minmax(0,1.06fr)_460px] lg:items-center">
+        <ExperiencePanel className="relative hidden overflow-hidden p-8 lg:flex lg:flex-col lg:justify-between">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(139,124,246,0.12),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(99,102,241,0.1),transparent_28%)]" />
 
           <div className="relative">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex rounded-full border border-[rgba(82,199,184,0.2)] bg-[rgba(82,199,184,0.08)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.34em] text-[var(--accent)]">
-                iTECify
-              </span>
-              <span className="rounded-full border border-amber-400/12 bg-amber-400/10 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-amber-300">
-                Demo Auth
-              </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <ExperiencePill>Demo Auth</ExperiencePill>
+              <ExperiencePill tone="accent">Route /auth</ExperiencePill>
             </div>
-            <h1 className="mt-6 max-w-xl text-5xl font-semibold tracking-[-0.05em] text-white">
-              Enter the collaborative browser IDE.
+
+            <h1 className="mt-6 max-w-2xl font-serif text-5xl font-semibold tracking-[-0.05em] text-white lg:text-6xl">
+              Enter the collaborative browser IDE with the same product feel as the landing page.
             </h1>
-            <p className="mt-5 max-w-xl text-base leading-7 text-[var(--text-muted)]">
-              This route acts as lightweight product entry. It captures a demo
-              identity, then hands off into the session-aware IDE workspace
-              without pretending to be production auth yet.
+            <p className="mt-5 max-w-2xl text-base leading-8 text-muted-foreground">
+              This entry screen stays intentionally lightweight, but it should still feel like the
+              same product. Sign in here, then hand off into the session-aware `/dev` lobby where
+              teams create or join isolated collaborative workspaces.
             </p>
           </div>
 
-          <div className="relative grid gap-4 sm:grid-cols-3">
-            {[
-              [
-                "IDE-first flow",
-                "Editor, preview, terminal, snapshots, and AI assistance live in one consistent product surface.",
-              ],
-              [
-                "Lightweight entry",
-                "No production auth yet. This stays simple for the demo while preserving a clean replacement point later.",
-              ],
-              [
-                "Session-based IDE",
-                "After sign-in, /dev lets you create or join a session code so each group gets its own isolated collaborative workspace.",
-              ],
-            ].map(([title, detail]) => (
-              <div
-                key={title}
-                className="rounded-3xl border border-[rgba(148,163,184,0.1)] bg-black/20 p-4"
-              >
-                <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--accent)]">
-                  {title}
-                </p>
-                <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
-                  {detail}
-                </p>
+          <div className="relative mt-10 grid gap-4 sm:grid-cols-3">
+            <ExperienceFeatureCard
+              title="IDE-first flow"
+              detail="Editor, preview, terminal, snapshots, and AI assistance remain the core product surface."
+            />
+            <ExperienceFeatureCard
+              title="Lightweight entry"
+              detail="Simple demo auth now, with a clean upgrade path later to real production auth."
+            />
+            <ExperienceFeatureCard
+              title="Session handoff"
+              detail="Once authenticated, /dev turns identity into a shareable session code and isolated room."
+            />
+          </div>
+        </ExperiencePanel>
+
+        <ExperiencePanel className="p-6 sm:p-8">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <ExperiencePill>Identity</ExperiencePill>
+              <ExperiencePill tone="muted">Next {nextPath}</ExperiencePill>
+            </div>
+            <Link href="/" className="text-sm text-muted-foreground transition hover:text-white">
+              Back To Landing
+            </Link>
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-primary/18 bg-primary/10 px-4 py-4 text-sm leading-6 text-[rgb(230,223,255)]">
+            This creates a local demo auth session only, then hands off into{" "}
+            <span className="font-mono text-white">/dev</span> where you create or join a
+            collaborative coding session.
+          </div>
+
+          <div className="mt-4 rounded-[24px] border border-border/30 bg-white/[0.04] px-4 py-4 text-sm leading-6 text-muted-foreground">
+            Identity stays local for now. Once authenticated, the next step is selecting a session
+            code that isolates collaborators, files, tabs, terminal activity, preview state, and
+            execution.
+          </div>
+
+          <div className="mt-5 flex items-center gap-2 rounded-[22px] border border-border/30 bg-white/[0.04] p-1">
+            {(["login", "register"] as const).map((item) => {
+              const active = mode === item;
+
+              return (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => {
+                    setMode(item);
+                    setErrors({});
+                    setSubmitError(null);
+                  }}
+                  className={`flex-1 rounded-[18px] px-4 py-2.5 text-sm font-medium transition ${
+                    active
+                      ? "bg-[linear-gradient(135deg,hsl(var(--primary)),hsl(var(--accent)))] text-white shadow-[0_10px_34px_rgba(139,124,246,0.26)]"
+                      : "text-muted-foreground hover:text-white"
+                  }`}
+                >
+                  {item === "login" ? "Log In" : "Register"}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-6">
+            <h2 className="font-serif text-3xl font-semibold tracking-[-0.04em] text-white">
+              {mode === "login" ? "Continue into the IDE" : "Create a demo identity"}
+            </h2>
+            <p className="mt-3 text-sm leading-7 text-muted-foreground">
+              {mode === "login"
+                ? "Use any valid email and password to continue into /dev, then choose or join a coding session."
+                : "Pick the name collaborators should see once you enter a coding session."}
+            </p>
+          </div>
+
+          <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
+            {mode === "register" ? (
+              <AuthInput
+                label="Username"
+                type="text"
+                value={values.username}
+                onChange={(value) => updateValue("username", value)}
+                placeholder="PairProgrammingPro"
+                error={errors.username}
+              />
+            ) : null}
+
+            <AuthInput
+              label="Email"
+              type="email"
+              value={values.email}
+              onChange={(value) => updateValue("email", value)}
+              placeholder="you@example.com"
+              error={errors.email}
+            />
+
+            <AuthInput
+              label="Password"
+              type="password"
+              value={values.password}
+              onChange={(value) => updateValue("password", value)}
+              placeholder="Minimum 6 characters"
+              error={errors.password}
+            />
+
+            {submitError ? (
+              <div className="rounded-[22px] border border-rose-400/18 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
+                {submitError}
               </div>
-            ))}
-          </div>
-        </section>
+            ) : null}
 
-        <section className="flex items-center justify-center">
-          <div className="w-full max-w-[460px] rounded-[32px] border border-[var(--line)] bg-[var(--bg-elevated)] p-6 shadow-[0_36px_140px_rgba(0,0,0,0.42)] backdrop-blur-xl sm:p-8">
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex rounded-full border border-[rgba(82,199,184,0.2)] bg-[rgba(82,199,184,0.08)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.34em] text-[var(--accent)]">
-                iTECify
-              </span>
-              <Link
-                href="/"
-                className="text-sm text-[var(--text-muted)] transition hover:text-white"
-              >
-                Back to landing
-              </Link>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-amber-400/12 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-100">
-              This is a lightweight entry screen for the demo. It creates a
-              local auth session only, then hands off into{" "}
-              <span className="font-mono">/dev</span> where you create or join
-              a collaborative coding session.
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-[rgba(82,199,184,0.14)] bg-[rgba(82,199,184,0.08)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
-              Your identity is kept local for now. Once authenticated, the next
-              step is selecting a session code that isolates collaborators,
-              files, tabs, terminal activity, preview state, and execution.
-            </div>
-
-            <div className="mt-4 flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-white/[0.03] p-1">
-              {(["login", "register"] as const).map((item) => {
-                const active = mode === item;
-
-                return (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => {
-                      setMode(item);
-                      setErrors({});
-                      setSubmitError(null);
-                    }}
-                    className={`flex-1 rounded-[18px] px-4 py-2.5 text-sm font-medium transition ${
-                      active
-                        ? "bg-white text-slate-950 shadow-[0_10px_30px_rgba(255,255,255,0.12)]"
-                        : "text-[var(--text-secondary)] hover:text-white"
-                    }`}
-                  >
-                    {item === "login" ? "Log In" : "Register"}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-6">
-              <h2 className="text-2xl font-semibold tracking-[-0.03em] text-white">
-                {mode === "login" ? "Continue into the IDE" : "Create a demo identity"}
-              </h2>
-              <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
-                {mode === "login"
-                  ? "Use any valid email and password to continue into /dev, then choose or join a coding session."
-                  : "Pick the name collaborators should see once you enter a coding session."}
-              </p>
-            </div>
-
-            <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
-              {mode === "register" ? (
-                <AuthInput
-                  label="Username"
-                  type="text"
-                  value={values.username}
-                  onChange={(value) => updateValue("username", value)}
-                  placeholder="PairProgrammingPro"
-                  error={errors.username}
-                />
-              ) : null}
-
-              <AuthInput
-                label="Email"
-                type="email"
-                value={values.email}
-                onChange={(value) => updateValue("email", value)}
-                placeholder="you@example.com"
-                error={errors.email}
-              />
-
-              <AuthInput
-                label="Password"
-                type="password"
-                value={values.password}
-                onChange={(value) => updateValue("password", value)}
-                placeholder="Minimum 6 characters"
-                error={errors.password}
-              />
-
-              {submitError ? (
-                <div className="rounded-2xl border border-rose-400/18 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                  {submitError}
-                </div>
-              ) : null}
-
-              <button
-                type="submit"
-                disabled={isSubmitting || status === "loading"}
-                className="w-full rounded-2xl border border-[rgba(82,199,184,0.28)] bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-slate-950 shadow-[0_12px_32px_rgba(82,199,184,0.18)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:brightness-100"
-              >
-                {isSubmitting
-                  ? mode === "login"
-                    ? "Signing in..."
-                    : "Creating account..."
-                  : mode === "login"
-                    ? "Enter /dev"
-                    : "Create demo account"}
-              </button>
-            </form>
-          </div>
-        </section>
+            <button
+              type="submit"
+              disabled={isSubmitting || status === "loading"}
+              className={`${experiencePrimaryButtonClassName} w-full rounded-2xl`}
+            >
+              {isSubmitting
+                ? mode === "login"
+                  ? "Signing in..."
+                  : "Creating account..."
+                : mode === "login"
+                  ? "Enter /dev"
+                  : "Create demo account"}
+            </button>
+          </form>
+        </ExperiencePanel>
       </div>
-    </main>
+    </ExperienceShell>
   );
 }

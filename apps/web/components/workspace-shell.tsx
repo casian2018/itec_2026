@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
+import { AiSuggestionsPanel } from "@/components/ai-suggestions-panel";
 import {
   IDE_THEMES,
   getStoredIdeTheme,
@@ -14,7 +15,9 @@ import {
   type RunCodeStatus,
 } from "@/lib/run-code";
 import {
+  type AiBlock,
   type AiEditProposal,
+  type AiSelectionContext,
   type AiSuggestionMode,
   type ChatMessage,
   createSocketClient,
@@ -25,6 +28,9 @@ import {
   type RoomSnapshot,
   type RunDonePayload,
   type RunOutputPayload,
+  type SessionActivityEvent,
+  type SessionComment,
+  type WorkspaceTemplateKind,
   type TerminalEntry,
   type WorkspaceFileLanguage,
   type WorkspaceFileNode,
@@ -32,10 +38,12 @@ import {
 } from "@/lib/socket";
 import {
   buildWorkspacePreviewDocument,
+  createWorkspaceZipBlob,
   applyWorkspaceTreeUpdate,
   createFallbackWorkspace,
   getFileExecutionRoute,
   getFileIcon,
+  getWorkspaceFileReadOnlyState,
   searchWorkspaceContents,
   searchWorkspaceFiles,
   getWorkspaceFile,
@@ -47,7 +55,6 @@ import {
 } from "@/lib/workspace";
 import {
   buildSessionInviteUrl,
-  formatSessionCodeForDisplay,
   uploadSessionProjectZip,
 } from "@/lib/session";
 import { CollaborativeEditor } from "./collaborative-editor";
@@ -57,8 +64,18 @@ import { IdeFileExplorer } from "./ide-file-explorer";
 import { IdePreviewPanel } from "./ide-preview-panel";
 import { IdeSidePanel } from "./ide-side-panel";
 import { PrivateAiChatPanel } from "./private-ai-chat-panel";
-import { ParticipantsBar } from "./participants-bar";
+import { ConsolePanel } from "./console-panel";
+import {
+  ItecifyActivityBar,
+  ItecifyCmdBar,
+  ItecifySidebarPresence,
+  ItecifyTopBar,
+  type ActivityKey,
+} from "./itecify-workspace-chrome";
 import { SharedChatPanel } from "./shared-chat-panel";
+import { IdeStatusBar } from "./ide-status-bar";
+import { SessionActivityPanel } from "./session-activity-panel";
+import { SessionCommentsPanel } from "./session-comments-panel";
 import {
   WorkspaceOmnibar,
   type WorkspaceCommandPrompt,
@@ -67,704 +84,174 @@ import {
 } from "./workspace-omnibar";
 
 const DOCUMENT_SYNC_DELAY_MS = 120;
+const MAX_SHARED_CHAT_MESSAGES = 200;
+const MAX_PRIVATE_CHAT_MESSAGES = 120;
+const MAX_RECENT_FILE_IDS = 12;
+const MAX_CLOSED_TAB_HISTORY = 12;
 
+type SaveState = "saved" | "saving" | "unsaved";
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
-type InspectorView = "preview" | "shared-chat" | "private-ai";
+type InspectorView =
+  | "preview"
+  | "shared-chat"
+  | "ai-blocks"
+  | "private-ai"
+  | "console-output"
+  | "activity"
+  | "comments";
 type BottomPanelView = "terminal" | "output" | "timeline";
-type EditorRevealRequest = {
-  fileId: string;
-  lineNumber: number;
-  nonce: number;
-};
-type PendingFileUpdate = {
-  fileId: string;
-  content: string;
-};
+type EditorRevealRequest = { fileId: string; lineNumber: number; nonce: number };
+type PendingFileUpdate = { fileId: string; content: string };
+type EditorSelection = { startLineNumber: number; endLineNumber: number; selectedText: string };
+type EditorViewState = { activeFileId: string; openFileIds: string[] };
+type ProjectImportState = { isImporting: boolean; progress: number | null; message: string | null };
 
-type EditorViewState = {
-  activeFileId: string;
-  openFileIds: string[];
-};
 
-type ProjectImportState = {
-  isImporting: boolean;
-  progress: number | null;
-  message: string | null;
-};
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
-type TopBarProps = {
-  currentUserName: string;
-  connectionStatus: ConnectionStatus;
-  consoleStatus: RunCodeStatus;
-  participantCount: number;
-  roomId: string;
-  isSigningOut: boolean;
-  themeId: IdeThemeId;
-  shareFeedback: string | null;
-  onThemeChange: (themeId: IdeThemeId) => void;
-  isExplorerVisible: boolean;
-  isBottomPanelVisible: boolean;
-  onToggleExplorer: () => void;
-  onToggleTerminal: () => void;
-  onOpenQuickOpen: () => void;
-  onOpenSearch: () => void;
-  onOpenCommandPalette: () => void;
-  onCopyInviteLink: () => void;
-  onCopySessionCode: () => void;
-  onLogout: () => void;
-};
-
-const LANGUAGE_OPTIONS: WorkspaceFileLanguage[] = [
-  "javascript",
-  "typescript",
-  "python",
-  "c",
-  "html",
-  "css",
-  "cpp",
-  "json",
-  "markdown",
-  "plaintext",
-];
-
-function ActionButton({
-  children,
-  accent = false,
-  disabled = false,
-  onClick,
-}: {
-  children: React.ReactNode;
-  accent?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={
-        accent
-          ? "h-8 border border-[var(--accent-line)] bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-contrast)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:brightness-100"
-          : "h-8 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 text-xs font-medium text-[var(--text-secondary)] transition hover:border-[var(--line-strong)] hover:bg-[var(--editor-tab-hover-bg)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-[var(--line)] disabled:hover:bg-[var(--bg-panel-soft)] disabled:hover:text-[var(--text-secondary)]"
-      }
-    >
-      {children}
-    </button>
-  );
+function upsertChatMessage(messages: ChatMessage[], message: ChatMessage, limit: number) {
+  const existingIndex = messages.findIndex((m) => m.id === message.id);
+  if (existingIndex < 0) return [...messages, message].slice(-limit);
+  const next = [...messages];
+  next[existingIndex] = message;
+  return next;
 }
 
-function StatusBadge({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  tone?: "neutral" | "success" | "warning" | "danger" | "accent";
-}) {
-  const toneClasses =
-    tone === "success"
-      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
-      : tone === "warning"
-        ? "border-amber-400/20 bg-amber-400/10 text-amber-300"
-      : tone === "danger"
-          ? "border-rose-400/20 bg-rose-400/10 text-rose-300"
-          : tone === "accent"
-            ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]"
-            : "border-[rgba(148,163,184,0.12)] bg-[var(--bg-panel-soft)] text-[var(--text-muted)]";
-
-  return (
-    <span
-      className={`inline-flex h-6 items-center gap-2 border px-2.5 font-mono text-[10px] uppercase tracking-[0.12em] ${toneClasses}`}
-    >
-      <span className="text-[9px] text-[var(--text-muted)]">{label}</span>
-      <span>{value}</span>
-    </span>
-  );
+function persistRecentFiles(roomId: string, fileIds: string[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(`itecify:recent-files:${roomId}`, JSON.stringify(fileIds.slice(0, MAX_RECENT_FILE_IDS)));
 }
-
-function TopBar({
-  currentUserName,
-  connectionStatus,
-  consoleStatus,
-  participantCount,
-  roomId,
-  isSigningOut,
-  themeId,
-  shareFeedback,
-  onThemeChange,
-  isExplorerVisible,
-  isBottomPanelVisible,
-  onToggleExplorer,
-  onToggleTerminal,
-  onOpenQuickOpen,
-  onOpenSearch,
-  onOpenCommandPalette,
-  onCopyInviteLink,
-  onCopySessionCode,
-  onLogout,
-}: TopBarProps) {
-  const statusLabel =
-    connectionStatus === "connected"
-      ? "Connected"
-      : connectionStatus === "connecting"
-        ? "Connecting"
-        : "Disconnected";
-  const connectionTone =
-    connectionStatus === "connected"
-      ? "success"
-      : connectionStatus === "connecting"
-        ? "warning"
-        : "danger";
-  const runStatusLabel =
-    consoleStatus === "running"
-      ? "Running"
-      : consoleStatus === "completed"
-        ? "Completed"
-        : consoleStatus === "error"
-          ? "Error"
-          : "Idle";
-  const runStatusTone =
-    consoleStatus === "running"
-      ? "warning"
-      : consoleStatus === "completed"
-        ? "success"
-        : consoleStatus === "error"
-          ? "danger"
-          : "accent";
-
-  return (
-    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--titlebar-bg)] px-3 py-2">
-      <div className="min-w-0 space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex h-6 items-center border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2.5 font-mono text-[10px] uppercase tracking-[0.24em] text-[var(--accent)]">
-            iTECify
-          </span>
-          <StatusBadge
-            label="session"
-            value={formatSessionCodeForDisplay(roomId)}
-            tone="accent"
-          />
-          <StatusBadge label="conn" value={statusLabel} tone={connectionTone} />
-          <StatusBadge label="run" value={runStatusLabel} tone={runStatusTone} />
-          <StatusBadge label="team" value={`${participantCount}`} />
-          <span className="inline-flex h-6 items-center border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-            {currentUserName}
-          </span>
-        </div>
-
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-medium text-[var(--text-primary)]">
-            EXPLORER / Collaborative Session
-          </h1>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-            Collaborative browser IDE with shared files, live preview, terminal output, and AI assistance.
-          </p>
-        </div>
-      </div>
-
-      <div className="space-y-1 border border-[var(--line)] bg-[var(--bg-panel)] p-1.5">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <ActionButton onClick={onToggleExplorer}>
-            {isExplorerVisible ? "Hide Explorer" : "Show Explorer"}
-          </ActionButton>
-          <ActionButton onClick={onToggleTerminal}>
-            {isBottomPanelVisible ? "Hide Terminal" : "Show Terminal"}
-          </ActionButton>
-          <ActionButton onClick={onOpenQuickOpen}>Quick Open</ActionButton>
-          <ActionButton onClick={onOpenSearch}>Search</ActionButton>
-          <ActionButton onClick={onOpenCommandPalette}>Palette</ActionButton>
-          <label className="inline-flex h-8 items-center gap-2 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 text-xs text-[var(--text-secondary)]">
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-              Theme
-            </span>
-            <select
-              value={themeId}
-              onChange={(event) => onThemeChange(event.target.value as IdeThemeId)}
-              className="bg-transparent font-medium text-[var(--text-primary)] outline-none"
-            >
-              {IDE_THEMES.map((theme) => (
-                <option
-                  key={theme.id}
-                  value={theme.id}
-                  className="bg-[var(--select-bg)] text-[var(--text-primary)]"
-                >
-                  {theme.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <ActionButton onClick={onCopyInviteLink}>Share Link</ActionButton>
-          <ActionButton onClick={onCopySessionCode}>Copy Code</ActionButton>
-          <ActionButton disabled={isSigningOut} onClick={onLogout}>
-            {isSigningOut ? "Signing Out..." : "Log Out"}
-          </ActionButton>
-        </div>
-        {shareFeedback ? (
-          <p className="mt-2 text-right font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)]">
-            {shareFeedback}
-          </p>
-        ) : null}
-      </div>
-    </header>
-  );
+function loadRecentFiles(roomId: string) {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(`itecify:recent-files:${roomId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch { return []; }
 }
-
-type EditorPanelProps = {
-  roomId: string;
-  activeFile: WorkspaceFileNode | null;
-  hasFiles: boolean;
-  isEmptyWorkspacePromptDismissed: boolean;
-  connectionStatus: ConnectionStatus;
-  ideThemeId: IdeThemeId;
-  openFiles: WorkspaceFileNode[];
-  canRunCode: boolean;
-  canFormatFile: boolean;
-  aiRequestMode: AiSuggestionMode | null;
-  projectImportState: ProjectImportState;
-  isRunningCode: boolean;
-  isPreviewFocused: boolean;
-  presentationSnapshot: RoomSnapshot | null;
-  isPresentationMode: boolean;
-  editorRevealRequest: EditorRevealRequest | null;
-  onSelectTab: (fileId: string) => void;
-  onCloseTab: (fileId: string) => void;
-  onChange: (value: string) => void;
-  onCursorChange: (position: CursorPosition) => void;
-  onAskAiAssist: () => void;
-  onAskAiNextLine: () => void;
-  onAskAiOptimize: () => void;
-  onFormatFile: () => void;
-  onLanguageChange: (language: WorkspaceFileLanguage) => void;
-  onCreateFile: () => void;
-  onCreateFolder: () => void;
-  onDismissEmptyWorkspacePrompt: () => void;
-  onTogglePreview: () => void;
-  onUploadProjectZip: () => void;
-  onRunCode: () => void;
-  remoteCursors: RemoteCursor[];
-  onExitPresentation: () => void;
-  onPreviousSnapshot: () => void;
-  onNextSnapshot: () => void;
-  hasPreviousSnapshot: boolean;
-  hasNextSnapshot: boolean;
-};
-
-function EditorPanel({
-  roomId,
-  activeFile,
-  hasFiles,
-  isEmptyWorkspacePromptDismissed,
-  connectionStatus,
-  ideThemeId,
-  openFiles,
-  canRunCode,
-  canFormatFile,
-  aiRequestMode,
-  projectImportState,
-  isRunningCode,
-  isPreviewFocused,
-  presentationSnapshot,
-  isPresentationMode,
-  editorRevealRequest,
-  onSelectTab,
-  onCloseTab,
-  onChange,
-  onCursorChange,
-  onAskAiAssist,
-  onAskAiNextLine,
-  onAskAiOptimize,
-  onFormatFile,
-  onLanguageChange,
-  onCreateFile,
-  onCreateFolder,
-  onDismissEmptyWorkspacePrompt,
-  onTogglePreview,
-  onUploadProjectZip,
-  onRunCode,
-  remoteCursors,
-  onExitPresentation,
-  onPreviousSnapshot,
-  onNextSnapshot,
-  hasPreviousSnapshot,
-  hasNextSnapshot,
-}: EditorPanelProps) {
-  const isAskingAi = aiRequestMode !== null;
-  const isReadOnly = isPresentationMode;
-  const activeFileCanPreview =
-    activeFile ? getFileExecutionRoute(activeFile) === "preview" : false;
-  const activeFileCanExecute =
-    activeFile
-      ? (() => {
-          const route = getFileExecutionRoute(activeFile);
-          return route !== "unsupported" && route !== "preview";
-        })()
-      : false;
-  const runButtonLabel = isRunningCode
-    ? "Running..."
-    : !activeFile
-      ? "Open File"
-      : activeFileCanPreview
-        ? "Open Preview"
-        : connectionStatus !== "connected"
-          ? "Connect to Run"
-          : activeFileCanExecute
-            ? "Run"
-            : "Run";
-  const actionHint = isPresentationMode
-    ? "Presentation mode este doar pentru preview și nu rulează fișiere."
-    : projectImportState.isImporting
-      ? `Importing ZIP into session ${roomId}${projectImportState.progress !== null ? ` (${projectImportState.progress}%)` : ""}.`
-    : !activeFile
-      ? "Sessionul este gol. Importa un ZIP sau creeaza fisiere noi direct din IDE."
-      : aiRequestMode === "next-line"
-        ? `Gemini pregătește propuneri line-by-line pentru continuarea lui ${activeFile.name}.`
-        : aiRequestMode === "optimize"
-          ? `Gemini descompune optimizarea lui ${activeFile.name} în schimbări line-by-line pe care le aprobi explicit.`
-        : aiRequestMode === "assist"
-            ? `Gemini pregătește o propunere reviewable pentru ${activeFile.name} în chatul tău privat.`
-        : isRunningCode
-          ? `Rulează ${activeFile.name} din editorul tău curent.`
-          : `Run folosește fișierul activ local: ${activeFile.name}.`;
-
-  return (
-    <section className="flex min-h-0 flex-col border border-[var(--line)] bg-[var(--editor-shell)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--editor-tab-bg)] px-3 py-2">
-        <div className="min-w-0">
-          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
-            Editor
-          </p>
-          <p className="mt-1 truncate font-mono text-xs text-[var(--text-secondary)]">
-            {(activeFile?.path ?? "No file open") + ` · ${roomId}`}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 text-xs">
-          {isPresentationMode ? (
-            <span className="border border-amber-400/14 bg-amber-400/10 px-2 py-1 font-mono text-amber-300">
-              Presentation Mode
-            </span>
-          ) : null}
-          <span className="border border-cyan-400/10 bg-cyan-400/10 px-2 py-1 font-mono text-cyan-300">
-            Shared file
-          </span>
-          {activeFile ? (
-            <span className="border border-[var(--line)] bg-[var(--bg-panel)] px-2 py-1 font-mono text-[var(--text-muted)]">
-              {getWorkspaceLanguageLabel(activeFile.language)}
-            </span>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="border-b border-[var(--line)] bg-[var(--bg-panel)] px-3 py-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <label className="inline-flex h-8 items-center gap-2 border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2.5 text-xs text-[var(--text-secondary)]">
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-              Lang
-            </span>
-            <select
-              value={activeFile?.language ?? "plaintext"}
-              onChange={(event) =>
-                onLanguageChange(event.target.value as WorkspaceFileLanguage)
-              }
-              disabled={!activeFile || isPresentationMode}
-              className="bg-transparent font-medium text-[var(--text-primary)] outline-none"
-            >
-              {LANGUAGE_OPTIONS.map((language) => (
-                <option
-                  key={language}
-                  value={language}
-                  className="bg-[var(--select-bg)] text-[var(--text-primary)]"
-                >
-                  {getWorkspaceLanguageLabel(language)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <ActionButton
-            disabled={isAskingAi || isPresentationMode}
-            onClick={onAskAiNextLine}
-          >
-            {aiRequestMode === "next-line" ? "Thinking..." : "Next Line"}
-          </ActionButton>
-          <ActionButton
-            disabled={isAskingAi || isPresentationMode}
-            onClick={onAskAiAssist}
-          >
-            {aiRequestMode === "assist" ? "Thinking..." : "AI Assist"}
-          </ActionButton>
-          <ActionButton
-            disabled={isAskingAi || isPresentationMode}
-            onClick={onAskAiOptimize}
-          >
-            {aiRequestMode === "optimize" ? "Thinking..." : "Optimize File"}
-          </ActionButton>
-          <ActionButton
-            disabled={projectImportState.isImporting || isPresentationMode}
-            onClick={onUploadProjectZip}
-          >
-            {projectImportState.isImporting
-              ? projectImportState.progress !== null
-                ? `Uploading ${projectImportState.progress}%`
-                : "Uploading..."
-              : "Upload Project ZIP"}
-          </ActionButton>
-          <ActionButton disabled={!canFormatFile} onClick={onFormatFile}>
-            Format
-          </ActionButton>
-          <ActionButton disabled={isPresentationMode} onClick={onTogglePreview}>
-            {isPreviewFocused ? "Hide Preview" : "Show Preview"}
-          </ActionButton>
-          <ActionButton accent disabled={!canRunCode} onClick={onRunCode}>
-            {runButtonLabel}
-          </ActionButton>
-        </div>
-        <p className="mt-2 text-[11px] text-[var(--text-muted)]">{actionHint}</p>
-        {projectImportState.message ? (
-          <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
-            {projectImportState.message}
-          </p>
-        ) : null}
-      </div>
-
-      <IdeEditorTabs
-        tabs={openFiles.map((file) => ({
-          id: file.id,
-          name: file.name,
-          path: file.path,
-          icon: getFileIcon(file.language),
-          extension: file.name.includes(".")
-            ? `.${file.name.split(".").pop() ?? ""}`
-            : undefined,
-          editable: true,
-        }))}
-        activeTabId={activeFile?.id ?? ""}
-        onSelect={onSelectTab}
-        onClose={onCloseTab}
-        disabled={isPresentationMode}
-      />
-
-      <div className="relative min-h-0 flex-1 overflow-hidden">
-        {isPresentationMode && presentationSnapshot ? (
-          <div className="absolute inset-x-3 top-3 z-20 border border-[rgba(245,158,11,0.16)] bg-[var(--overlay-panel)] px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-amber-300">
-                  Presentation Mode
-                </p>
-                <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">
-                  {presentationSnapshot.label}
-                </p>
-                <p className="mt-1 text-xs text-[var(--text-muted)]">
-                  Replay snapshot preview for live walkthroughs. The shared workspace stays unchanged until restore.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={!hasPreviousSnapshot}
-                  onClick={onPreviousSnapshot}
-                  className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition hover:border-[var(--line-strong)] hover:bg-[var(--editor-tab-hover-bg)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  disabled={!hasNextSnapshot}
-                  onClick={onNextSnapshot}
-                  className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition hover:border-[var(--line-strong)] hover:bg-[var(--editor-tab-hover-bg)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Next
-                </button>
-                <button
-                  type="button"
-                  onClick={onExitPresentation}
-                  className="border border-[rgba(245,158,11,0.18)] bg-amber-400/10 px-3 py-2 text-sm font-medium text-amber-300 transition hover:border-[rgba(245,158,11,0.28)] hover:bg-amber-400/14"
-                >
-                  Exit
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {activeFile ? (
-          <CollaborativeEditor
-            ideTheme={ideThemeId}
-            readOnly={isReadOnly}
-            language={toMonacoLanguage(activeFile.language)}
-            value={activeFile.content}
-            revealRequest={
-              editorRevealRequest?.fileId === activeFile.id
-                ? {
-                    lineNumber: editorRevealRequest.lineNumber,
-                    nonce: editorRevealRequest.nonce,
-                  }
-                : null
-            }
-            onChange={onChange}
-            onCursorChange={onCursorChange}
-            remoteCursors={isReadOnly ? [] : remoteCursors}
-          />
-        ) : (
-          <div className="flex h-full min-h-[320px] items-center justify-center bg-[var(--editor-shell)]">
-            {hasFiles || !isEmptyWorkspacePromptDismissed ? (
-              <div className="max-w-lg border border-[var(--line)] bg-[var(--empty-overlay)] px-5 py-4 text-left">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--text-muted)]">
-                      {hasFiles ? "No Open Tabs" : "Empty Session Workspace"}
-                    </p>
-                    <p className="mt-2 text-sm text-[var(--text-primary)]">
-                      {hasFiles
-                        ? "The editor has no active tab."
-                        : "This collaborative room starts with no project files."}
-                    </p>
-                  </div>
-                  {!hasFiles ? (
-                    <button
-                      type="button"
-                      onClick={onDismissEmptyWorkspacePrompt}
-                      className="inline-flex h-7 w-7 items-center justify-center border border-[var(--line)] bg-[var(--bg-panel-soft)] text-sm text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)]"
-                      title="Close empty workspace prompt"
-                    >
-                      ×
-                    </button>
-                  ) : null}
-                </div>
-                <p className="mt-2 text-[13px] leading-6 text-[var(--text-secondary)]">
-                  {hasFiles
-                    ? "Select a file from the explorer to reopen it, or create a new file in the workspace."
-                    : "Upload a project ZIP to import a full codebase into this session, or create a file or folder manually."}
-                </p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <ActionButton
-                    accent
-                    disabled={projectImportState.isImporting}
-                    onClick={onUploadProjectZip}
-                  >
-                    {projectImportState.isImporting ? "Uploading ZIP..." : "Upload Project ZIP"}
-                  </ActionButton>
-                  <ActionButton onClick={onCreateFile}>New File</ActionButton>
-                  <ActionButton onClick={onCreateFolder}>New Folder</ActionButton>
-                </div>
-              </div>
-            ) : (
-              <div className="border border-[var(--line)] bg-[var(--empty-overlay)] px-4 py-3 text-center">
-                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                  Workspace Empty
-                </p>
-                <p className="mt-2 text-[12px] text-[var(--text-secondary)]">
-                  Use the explorer controls above to upload or create files.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </section>
-  );
+function persistHiddenFilesPreference(isVisible: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem("itecify:show-hidden-files", isVisible ? "true" : "false");
 }
-
+function loadHiddenFilesPreference() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem("itecify:show-hidden-files") === "true";
+}
 function createLocalParticipant(name: string, userId?: string): Participant {
-  return {
-    socketId: "local-user",
-    name,
-    userId,
-  };
+  return { socketId: "local-user", name, userId };
 }
-
 function normalizeEditorViewState(
   workspace: WorkspaceState,
   currentView: EditorViewState | null,
   preferredView?: Partial<EditorViewState>,
 ): EditorViewState {
-  const validFileIds = new Set(getWorkspaceFiles(workspace).map((file) => file.id));
-  const preferredActiveFileId =
-    preferredView?.activeFileId && validFileIds.has(preferredView.activeFileId)
-      ? preferredView.activeFileId
-      : null;
-  const currentActiveFileId =
-    currentView?.activeFileId && validFileIds.has(currentView.activeFileId)
-      ? currentView.activeFileId
-      : null;
+  const validFileIds = new Set(getWorkspaceFiles(workspace).map((f) => f.id));
+  const preferredActiveFileId = preferredView?.activeFileId && validFileIds.has(preferredView.activeFileId) ? preferredView.activeFileId : null;
+  const currentActiveFileId = currentView?.activeFileId && validFileIds.has(currentView.activeFileId) ? currentView.activeFileId : null;
   const activeFileId =
-    preferredActiveFileId ??
-    currentActiveFileId ??
-    (validFileIds.has(workspace.activeFileId) &&
-    workspace.openFileIds.includes(workspace.activeFileId)
-      ? workspace.activeFileId
-      : null) ??
-    "";
-
+    preferredActiveFileId ?? currentActiveFileId ??
+    (validFileIds.has(workspace.activeFileId) && workspace.openFileIds.includes(workspace.activeFileId) ? workspace.activeFileId : null) ?? "";
   const nextOpenFileIds = [
     ...(preferredView?.openFileIds ?? []),
     ...(currentView?.openFileIds ?? []),
     ...workspace.openFileIds,
-  ].filter(
-    (openFileId, index, collection) =>
-      validFileIds.has(openFileId) && collection.indexOf(openFileId) === index,
-  );
-
-  if (activeFileId && !nextOpenFileIds.includes(activeFileId)) {
-    nextOpenFileIds.unshift(activeFileId);
-  }
-
-  return {
-    activeFileId,
-    openFileIds: nextOpenFileIds,
-  };
+  ].filter((id, i, arr) => validFileIds.has(id) && arr.indexOf(id) === i);
+  if (activeFileId && !nextOpenFileIds.includes(activeFileId)) nextOpenFileIds.unshift(activeFileId);
+  return { activeFileId, openFileIds: nextOpenFileIds };
 }
-
 function isNativeTextInputTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest(".monaco-editor") || target.closest(".xterm") || target.classList.contains("xterm-helper-textarea")) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
 
-  if (
-    target.closest(".monaco-editor") ||
-    target.closest(".xterm") ||
-    target.classList.contains("xterm-helper-textarea")
-  ) {
-    return false;
-  }
+// ─── iTECify editor breadcrumb ─────────────────────────────────────────────
+type ItecifyBreadcrumbProps = {
+  activeFile: WorkspaceFileNode | null;
+  saveState: SaveState;
+  isReadOnly: boolean;
+};
 
-  return Boolean(
-    target.closest("input, textarea, select, [contenteditable='true']"),
+function ItecifyBreadcrumb({ activeFile, saveState, isReadOnly }: ItecifyBreadcrumbProps) {
+  const crumbs = activeFile ? activeFile.path.split("/").filter(Boolean) : [];
+
+  return (
+    <div className="flex h-[26px] flex-shrink-0 items-center border-b border-[rgba(255,255,255,0.055)] bg-[#0b0d12] px-3.5 text-[10.5px] text-[#626880]">
+      {activeFile ? (
+        <>
+          {crumbs.slice(0, -1).map((c, i) => (
+            <span key={`${c}-${i}`} className="flex items-center gap-1">
+              {i > 0 ? <span className="text-[#3d4259]">/</span> : null}
+              <span className="cursor-default hover:text-[#a8abbe]">{c}</span>
+            </span>
+          ))}
+          {crumbs.length > 1 ? <span className="text-[#3d4259]">/</span> : null}
+          <span className="text-[#a8abbe]">{activeFile.name}</span>
+          {isReadOnly ? (
+            <span className="ml-2 rounded border border-[rgba(232,162,58,0.25)] px-1.5 py-px text-[9px] text-[#e8a23a]">read-only</span>
+          ) : null}
+          {saveState === "unsaved" ? (
+            <span className="ml-2 text-[9px] text-[#e8a23a]">unsaved</span>
+          ) : null}
+          <span className="ml-auto rounded border border-[rgba(78,205,196,0.22)] bg-[rgba(78,205,196,0.04)] px-1.5 py-px text-[9.5px] tracking-[0.04em] text-[#4ecdc4]">
+            shared
+          </span>
+        </>
+      ) : (
+        <span className="italic opacity-50">No file open — use Explorer or Quick open</span>
+      )}
+    </div>
   );
 }
 
+// ─── Presentation overlay ──────────────────────────────────────────────────
+type PresentationOverlayProps = {
+  snapshot: RoomSnapshot;
+  hasPrevious: boolean;
+  hasNext: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+  onExit: () => void;
+};
+function PresentationOverlay({ snapshot, hasPrevious, hasNext, onPrevious, onNext, onExit }: PresentationOverlayProps) {
+  return (
+    <div className="absolute inset-x-4 top-3 z-30 flex items-center justify-between gap-3 bg-[#1e1e1e] border border-[#cca700]/40 px-4 py-2.5 shadow-xl rounded-md">
+      <div className="min-w-0">
+        <p className="text-[10px] font-mono uppercase tracking-widest text-[#CCA700]">Presentation Mode</p>
+        <p className="text-[13px] font-medium text-[#CCCCCC] truncate mt-0.5">{snapshot.label}</p>
+      </div>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <button type="button" disabled={!hasPrevious} onClick={onPrevious} className="px-3 py-1 text-[12px] text-[#CCCCCC] border border-[#3C3C3C] hover:bg-[#3C3C3C] disabled:opacity-40 disabled:cursor-not-allowed transition-colors">← Prev</button>
+        <button type="button" disabled={!hasNext} onClick={onNext} className="px-3 py-1 text-[12px] text-[#CCCCCC] border border-[#3C3C3C] hover:bg-[#3C3C3C] disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Next →</button>
+        <button type="button" onClick={onExit} className="px-3 py-1 text-[12px] text-[#CCA700] border border-[#CCA700]/40 hover:bg-[#CCA700]/10 transition-colors">Exit</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main WorkspaceShell ───────────────────────────────────────────────────
 type WorkspaceShellProps = {
   roomId: string;
   currentUserName: string;
   currentUserId: string;
 };
 
-export function WorkspaceShell({
-  roomId,
-  currentUserName,
-  currentUserId,
-}: WorkspaceShellProps) {
+export function WorkspaceShell({ roomId, currentUserName, currentUserId }: WorkspaceShellProps) {
   const { signOutUser } = useAuth();
 
-  const [workspace, setWorkspace] = useState<WorkspaceState>(() =>
-    createFallbackWorkspace(),
-  );
-  const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>("connecting");
-  const [participants, setParticipants] = useState<Participant[]>(() => [
-    createLocalParticipant(currentUserName, currentUserId),
-  ]);
+  const [workspace, setWorkspace] = useState<WorkspaceState>(() => createFallbackWorkspace());
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
+  const [participants, setParticipants] = useState<Participant[]>(() => [createLocalParticipant(currentUserName, currentUserId)]);
   const [sharedChatMessages, setSharedChatMessages] = useState<ChatMessage[]>([]);
   const [privateChatMessages, setPrivateChatMessages] = useState<ChatMessage[]>([]);
   const [aiEditProposals, setAiEditProposals] = useState<AiEditProposal[]>([]);
+  const [aiBlocks, setAiBlocks] = useState<AiBlock[]>([]);
   const [snapshots, setSnapshots] = useState<RoomSnapshot[]>([]);
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
-  const [aiRequestMode, setAiRequestMode] = useState<AiSuggestionMode | null>(
-    null,
-  );
+  const [aiRequestMode, setAiRequestMode] = useState<AiSuggestionMode | null>(null);
   const [aiErrorMessage, setAiErrorMessage] = useState<string | null>(null);
+  const [aiBlockErrorMessage, setAiBlockErrorMessage] = useState<string | null>(null);
+  const [isAiBlockLoading, setIsAiBlockLoading] = useState(false);
   const [isRunningCode, setIsRunningCode] = useState(false);
   const [consoleStatus, setConsoleStatus] = useState<RunCodeStatus>("idle");
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -774,34 +261,32 @@ export function WorkspaceShell({
   const [currentSocketId, setCurrentSocketId] = useState<string | null>(null);
   const [previewSnapshotId, setPreviewSnapshotId] = useState<string | null>(null);
   const [isPresentationMode, setIsPresentationMode] = useState(false);
-  const [inspectorView, setInspectorView] =
-    useState<InspectorView>("preview");
-  const [bottomPanelView, setBottomPanelView] =
-    useState<BottomPanelView>("terminal");
+  const [inspectorView, setInspectorView] = useState<InspectorView>("preview");
+  const [bottomPanelView, setBottomPanelView] = useState<BottomPanelView>("terminal");
   const [isExplorerVisible, setIsExplorerVisible] = useState(true);
   const [isBottomPanelVisible, setIsBottomPanelVisible] = useState(true);
-  const [omnibarMode, setOmnibarMode] =
-    useState<WorkspaceOmnibarMode>("quick-open");
+  const [omnibarMode, setOmnibarMode] = useState<WorkspaceOmnibarMode>("quick-open");
   const [isOmnibarOpen, setIsOmnibarOpen] = useState(false);
   const [omnibarQuery, setOmnibarQuery] = useState("");
-  const [commandPrompt, setCommandPrompt] = useState<WorkspaceCommandPrompt | null>(
-    null,
-  );
-  const [ideThemeId, setIdeThemeId] = useState<IdeThemeId>(() =>
-    getStoredIdeTheme(),
-  );
-  const [projectImportState, setProjectImportState] = useState<ProjectImportState>({
-    isImporting: false,
-    progress: null,
-    message: null,
-  });
-  const [isEmptyWorkspacePromptDismissed, setIsEmptyWorkspacePromptDismissed] =
-    useState(false);
-  const [editorView, setEditorView] = useState<EditorViewState>(() =>
-    normalizeEditorViewState(createFallbackWorkspace(), null),
-  );
-  const [editorRevealRequest, setEditorRevealRequest] =
-    useState<EditorRevealRequest | null>(null);
+  const [commandPrompt, setCommandPrompt] = useState<WorkspaceCommandPrompt | null>(null);
+  const [ideThemeId, setIdeThemeId] = useState<IdeThemeId>(() => getStoredIdeTheme());
+  const [projectImportState, setProjectImportState] = useState<ProjectImportState>({ isImporting: false, progress: null, message: null });
+  const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [dirtyFileIds, setDirtyFileIds] = useState<string[]>([]);
+  const [closedTabHistory, setClosedTabHistory] = useState<string[]>([]);
+  const [recentFileIds, setRecentFileIds] = useState<string[]>([]);
+  const [showHiddenFiles, setShowHiddenFiles] = useState(false);
+  const [isEmptyWorkspacePromptDismissed, setIsEmptyWorkspacePromptDismissed] = useState(false);
+  const [editorView, setEditorView] = useState<EditorViewState>(() => normalizeEditorViewState(createFallbackWorkspace(), null));
+  const [editorRevealRequest, setEditorRevealRequest] = useState<EditorRevealRequest | null>(null);
+  const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
+  const [activityKey, setActivityKey] = useState<ActivityKey>("explorer");
+  const [activityFeed, setActivityFeed] = useState<SessionActivityEvent[]>([]);
+  const [sessionComments, setSessionComments] = useState<SessionComment[]>([]);
+  const [editorCursorPos, setEditorCursorPos] = useState({ lineNumber: 1, column: 1 });
+  const [lastRunInfo, setLastRunInfo] = useState<{ exitCode: number; failed: boolean } | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
   const socketRef = useRef<ItecifySocket | null>(null);
   const projectZipInputRef = useRef<HTMLInputElement | null>(null);
   const shareFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -811,1954 +296,1085 @@ export function WorkspaceShell({
   const flushPendingFileUpdateRef = useRef<() => void>(() => {});
   const showShareFeedbackRef = useRef<(message: string) => void>(() => {});
   const pendingFileUpdateRef = useRef<PendingFileUpdate | null>(null);
+  const aiBlockAutoSuggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAiBlockSignatureRef = useRef<string | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const applyingRemoteFileIdRef = useRef<string | null>(null);
-  const latestCursorRef = useRef<{ fileId: string; position: CursorPosition } | null>(
-    null,
-  );
+  const latestCursorRef = useRef<{ fileId: string; position: CursorPosition } | null>(null);
+  const saveStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const currentUserNameRef = useRef(currentUserName);
   const joinedParticipantNameRef = useRef<string | null>(null);
+  const dirtyFileIdsRef = useRef<string[]>([]);
+  const closedTabHistoryRef = useRef<string[]>([]);
+  const requestCloseTabRef = useRef<(fileId: string) => void>(() => {});
+  const reopenClosedTabRef = useRef<() => void>(() => {});
+  const canFormatFileRef = useRef(false);
+  const liveActiveFileRef = useRef<WorkspaceFileNode | null>(null);
+  const editorViewRef = useRef<EditorViewState>(editorView);
+  const bottomPanelViewRef = useRef<BottomPanelView>(bottomPanelView);
 
   const liveActiveFile = getWorkspaceFile(workspace, editorView.activeFileId);
-  const workspaceFiles = getWorkspaceFiles(workspace);
+  const liveActiveFileReadOnlyState = getWorkspaceFileReadOnlyState(liveActiveFile);
+  const workspaceFiles = useMemo(() => getWorkspaceFiles(workspace), [workspace]);
   const inspectorActiveFile = liveActiveFile ?? workspaceFiles[0] ?? null;
-  const presentationSnapshot =
-    isPresentationMode
-      ? snapshots.find((snapshot) => snapshot.id === previewSnapshotId) ?? null
-      : null;
+  const presentationSnapshot = isPresentationMode ? snapshots.find((s) => s.id === previewSnapshotId) ?? null : null;
   const displayedWorkspace = presentationSnapshot?.workspace ?? workspace;
-  const displayedActiveFile = getWorkspaceFile(
-    displayedWorkspace,
-    isPresentationMode ? displayedWorkspace.activeFileId : editorView.activeFileId,
-  );
-  const displayedOpenFiles = (isPresentationMode
-    ? displayedWorkspace.openFileIds
-    : editorView.openFileIds)
-    .map((fileId) => getWorkspaceFile(displayedWorkspace, fileId))
-    .filter((file): file is WorkspaceFileNode => Boolean(file));
-  const visibleRemoteCursors = liveActiveFile
-    ? remoteCursors.filter((cursor) => cursor.fileId === liveActiveFile.id)
-    : [];
-  const liveActiveFileExecutionRoute = liveActiveFile
-    ? getFileExecutionRoute(liveActiveFile)
-    : "unsupported";
+  const displayedActiveFile = getWorkspaceFile(displayedWorkspace, isPresentationMode ? displayedWorkspace.activeFileId : editorView.activeFileId);
+  const displayedOpenFiles = (isPresentationMode ? displayedWorkspace.openFileIds : editorView.openFileIds)
+    .map((id) => getWorkspaceFile(displayedWorkspace, id))
+    .filter((f): f is WorkspaceFileNode => Boolean(f));
+  const visibleRemoteCursors = liveActiveFile ? remoteCursors.filter((c) => c.fileId === liveActiveFile.id) : [];
+  const liveActiveFileExecutionRoute = liveActiveFile ? getFileExecutionRoute(liveActiveFile) : "unsupported";
   const isAskingAi = aiRequestMode !== null;
   const liveActiveFileCanPreview = liveActiveFileExecutionRoute === "preview";
   const canRunCode =
-    !isPresentationMode &&
-    !isRunningCode &&
-    !!liveActiveFile &&
-    connectionStatus === "connected" &&
-    (
-      liveActiveFileCanPreview ||
-      (
-        liveActiveFileExecutionRoute !== "unsupported" &&
-        liveActiveFile.content.trim().length > 0
-      )
-    );
+    !isPresentationMode && !isRunningCode && !!liveActiveFile && connectionStatus === "connected" &&
+    (liveActiveFileCanPreview || (liveActiveFileExecutionRoute !== "unsupported" && liveActiveFile.content.trim().length > 0));
   const canFormatFile =
-    !isPresentationMode &&
-    !!liveActiveFile &&
-    [
-      "javascript",
-      "typescript",
-      "html",
-      "css",
-      "json",
-      "markdown",
-    ].includes(liveActiveFile.language);
-  const canFormatFileRef = useRef(canFormatFile);
-  const liveActiveFileRef = useRef<WorkspaceFileNode | null>(liveActiveFile);
-  const editorViewRef = useRef<EditorViewState>(editorView);
-  const bottomPanelViewRef = useRef<BottomPanelView>(bottomPanelView);
-  const previewDocument = useMemo(
-    () => buildWorkspacePreviewDocument(workspace),
-    [workspace],
-  );
+    !isPresentationMode && !!liveActiveFile && !liveActiveFileReadOnlyState.isReadOnly &&
+    ["javascript","typescript","html","css","json","markdown"].includes(liveActiveFile.language);
+
+  const previewDocument = useMemo(() => buildWorkspacePreviewDocument(workspace), [workspace]);
   const quickOpenItems = useMemo(() => {
     const searchResults = searchWorkspaceFiles(workspace, omnibarQuery);
     const openFileSet = new Set(editorView.openFileIds);
-
-    return searchResults
-      .sort((left, right) => {
-        if (left.fileId === editorView.activeFileId) {
-          return -1;
-        }
-
-        if (right.fileId === editorView.activeFileId) {
-          return 1;
-        }
-
-        const leftIsOpen = openFileSet.has(left.fileId);
-        const rightIsOpen = openFileSet.has(right.fileId);
-
-        if (leftIsOpen !== rightIsOpen) {
-          return leftIsOpen ? -1 : 1;
-        }
-
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.path.localeCompare(right.path);
-      })
-      .slice(0, 24)
-      .map((result) => ({
-        id: result.id,
-        fileId: result.fileId,
-        title: result.name,
-        subtitle: result.path,
-        icon: result.icon,
-        badge:
-          result.fileId === editorView.activeFileId
-            ? "Active"
-            : openFileSet.has(result.fileId)
-              ? "Open"
-              : undefined,
-      }));
-  }, [editorView.activeFileId, editorView.openFileIds, omnibarQuery, workspace]);
-  const fileSearchItems = useMemo(
-    () =>
-      searchWorkspaceFiles(workspace, omnibarQuery)
-        .slice(0, 20)
-        .map((result) => ({
-          id: result.id,
-          fileId: result.fileId,
-          title: result.name,
-          subtitle: result.path,
-          icon: result.icon,
-        })),
-    [omnibarQuery, workspace],
-  );
-  const contentSearchItems = useMemo(
-    () =>
-      searchWorkspaceContents(workspace, omnibarQuery).map((result) => ({
-        id: result.id,
-        fileId: result.fileId,
-        title: result.name,
-        subtitle: result.path,
-        icon: result.icon,
-        lineNumber: result.lineNumber,
-        lineText: result.lineText,
-      })),
-    [omnibarQuery, workspace],
-  );
-  const commandItems = useMemo<WorkspaceOmnibarCommandItem[]>(
-    () => {
-      const normalizedQuery = omnibarQuery.trim().toLowerCase();
-      const allItems: WorkspaceOmnibarCommandItem[] = [
-        {
-          id: "create-file",
-          title: "Create File",
-          subtitle: "Create a new file beside the active file or at the workspace root.",
-          icon: "FILE",
-        },
-        {
-          id: "create-folder",
-          title: "Create Folder",
-          subtitle: "Create a new folder beside the active file or at the workspace root.",
-          icon: "DIR",
-        },
-        {
-          id: "rename-active",
-          title: "Rename Active File",
-          subtitle: liveActiveFile
-            ? `Rename ${liveActiveFile.name}.`
-            : "Open a file before renaming it.",
-          icon: "REN",
-          disabled: !liveActiveFile,
-        },
-        {
-          id: "format-active",
-          title: "Format Active File",
-          subtitle: canFormatFile
-            ? "Run the shared formatter for the current file."
-            : "Formatting is only available for JS, TS, HTML, CSS, JSON, and Markdown.",
-          icon: "FMT",
-          shortcut: "Shift + Alt + F",
-          disabled: !canFormatFile,
-        },
-        {
-          id: "run-active",
-          title: "Run Active File",
-          subtitle: liveActiveFile
-            ? `Run ${liveActiveFile.name} with the language-aware IDE runner.`
-            : "Open a runnable file before using Run.",
-          icon: "RUN",
-          disabled: !canRunCode,
-        },
-        {
-          id: "open-preview",
-          title: "Open Live Preview",
-          subtitle: previewDocument
-            ? "Focus the right-side live preview panel."
-            : "Add index.html to enable live preview.",
-          icon: "PRV",
-          disabled: !previewDocument,
-        },
-        {
-          id: "toggle-explorer",
-          title: isExplorerVisible ? "Hide Explorer" : "Show Explorer",
-          subtitle: "Toggle the left workspace explorer.",
-          icon: "EXP",
-          shortcut: "Ctrl/Cmd + B",
-        },
-        {
-          id: "toggle-terminal",
-          title: isBottomPanelVisible ? "Hide Terminal Panel" : "Show Terminal Panel",
-          subtitle: "Toggle the bottom integrated terminal area.",
-          icon: "TRM",
-          shortcut: "Ctrl/Cmd + J",
-        },
-        ...IDE_THEMES.map((theme) => ({
-          id: `theme:${theme.id}`,
-          title: `Change Theme: ${theme.label}`,
-          subtitle: "Switch Monaco and the IDE shell together.",
-          icon: "THM",
-          badge: theme.id === ideThemeId ? "Active" : undefined,
-        })),
-      ];
-
-      if (!normalizedQuery) {
-        return allItems;
+    const recentRank = new Map(recentFileIds.map((id, i) => [id, i] as const));
+    return searchResults.sort((l, r) => {
+      if (l.fileId === editorView.activeFileId) return -1;
+      if (r.fileId === editorView.activeFileId) return 1;
+      const lo = openFileSet.has(l.fileId), ro = openFileSet.has(r.fileId);
+      if (lo !== ro) return lo ? -1 : 1;
+      if (!omnibarQuery.trim()) {
+        const lr = recentRank.get(l.fileId) ?? Infinity;
+        const rr = recentRank.get(r.fileId) ?? Infinity;
+        if (lr !== rr) return lr - rr;
       }
+      if (r.score !== l.score) return r.score - l.score;
+      return l.path.localeCompare(r.path);
+    }).slice(0, 24).map((result) => ({
+      id: result.id, fileId: result.fileId, title: result.name, subtitle: result.path, icon: result.icon,
+      badge: result.fileId === editorView.activeFileId ? "Active" : openFileSet.has(result.fileId) ? "Open" : recentRank.has(result.fileId) ? "Recent" : undefined,
+    }));
+  }, [editorView.activeFileId, editorView.openFileIds, omnibarQuery, recentFileIds, workspace]);
+  const pendingAiBlocksForActiveFile = useMemo(() => aiBlocks.filter((b) => b.fileId === liveActiveFile?.id && b.status === "pending"), [aiBlocks, liveActiveFile?.id]);
+  const selectionSummary = editorSelection ? `Lines ${editorSelection.startLineNumber}-${editorSelection.endLineNumber}` : null;
+  const fileSearchItems = useMemo(() => searchWorkspaceFiles(workspace, omnibarQuery).slice(0, 20).map((r) => ({ id: r.id, fileId: r.fileId, title: r.name, subtitle: r.path, icon: r.icon })), [omnibarQuery, workspace]);
+  const contentSearchItems = useMemo(() => searchWorkspaceContents(workspace, omnibarQuery).map((r) => ({ id: r.id, fileId: r.fileId, title: r.name, subtitle: r.path, icon: r.icon, lineNumber: r.lineNumber, lineText: r.lineText })), [omnibarQuery, workspace]);
+  const commandItems = useMemo<WorkspaceOmnibarCommandItem[]>(() => {
+    const q = omnibarQuery.trim().toLowerCase();
+    const all: WorkspaceOmnibarCommandItem[] = [
+      { id: "create-file", title: "Create File", subtitle: "New file in workspace", icon: "FILE" },
+      { id: "create-folder", title: "Create Folder", subtitle: "New folder in workspace", icon: "DIR" },
+      { id: "rename-active", title: "Rename Active File", subtitle: liveActiveFile ? `Rename ${liveActiveFile.name}` : "Open a file first", icon: "REN", disabled: !liveActiveFile },
+      { id: "format-active", title: "Format Document", subtitle: "Shift+Alt+F", icon: "FMT", shortcut: "⇧⌥F", disabled: !canFormatFile },
+      { id: "run-active", title: "Run File", subtitle: liveActiveFile?.name ?? "Open a file", icon: "RUN", disabled: !canRunCode },
+      { id: "reopen-closed-tab", title: "Reopen Closed Editor", subtitle: "⌘⇧T", icon: "TAB", shortcut: "⌘⇧T", disabled: closedTabHistory.length === 0 },
+      { id: "open-preview", title: "Open Preview", subtitle: "Focus live preview panel", icon: "PRV", disabled: !previewDocument },
+      { id: "toggle-explorer", title: isExplorerVisible ? "Hide Explorer" : "Show Explorer", subtitle: "⌘B", icon: "EXP", shortcut: "⌘B" },
+      { id: "toggle-terminal", title: isBottomPanelVisible ? "Hide Terminal" : "Show Terminal", subtitle: "⌘J", icon: "TRM", shortcut: "⌘J" },
+      { id: "download-workspace", title: "Download Workspace ZIP", subtitle: "Export session", icon: "ZIP" },
+      { id: "template:python-starter", title: "New Python Starter", subtitle: "ready-to-run Python workspace", icon: "PY" },
+      { id: "template:cpp-starter", title: "New C++ Starter", subtitle: "console starter", icon: "C++" },
+      { id: "template:html-css-starter", title: "New HTML/CSS Starter", subtitle: "index.html + style.css + script.js", icon: "WEB" },
+      { id: "template:readme-starter", title: "New README", subtitle: "structured README.md", icon: "MD" },
+      { id: "template:json-config-starter", title: "New JSON Config", subtitle: "config.json starter", icon: "{}" },
+      { id: "summarize-project", title: "Summarize project", subtitle: "AI overview of workspace files", icon: "Σ" },
+      { id: "keyboard-shortcuts", title: "Keyboard shortcuts", subtitle: "Reference for this IDE", icon: "⌨" },
+      ...IDE_THEMES.map((t) => ({ id: `theme:${t.id}`, title: `Theme: ${t.label}`, subtitle: "Switch IDE theme", icon: "THM", badge: t.id === ideThemeId ? "Active" : undefined })),
+    ];
+    if (!q) return all;
+    return all.filter((item) => `${item.title} ${item.subtitle}`.toLowerCase().includes(q));
+  }, [canFormatFile, canRunCode, closedTabHistory.length, ideThemeId, isBottomPanelVisible, isExplorerVisible, liveActiveFile, omnibarQuery, previewDocument]);
+  const presentationSnapshotIndex = presentationSnapshot ? snapshots.findIndex((s) => s.id === presentationSnapshot.id) : -1;
 
-      return allItems.filter((item) =>
-        `${item.title} ${item.subtitle}`.toLowerCase().includes(normalizedQuery),
-      );
-    },
-    [
-      canFormatFile,
-      canRunCode,
-      ideThemeId,
-      isBottomPanelVisible,
-      isExplorerVisible,
-      liveActiveFile,
-      omnibarQuery,
-      previewDocument,
-    ],
-  );
-  const presentationSnapshotIndex = presentationSnapshot
-    ? snapshots.findIndex((snapshot) => snapshot.id === presentationSnapshot.id)
-    : -1;
+  // ── Ref syncs ──
+  useEffect(() => { isRunningCodeRef.current = isRunningCode; }, [isRunningCode]);
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
+  useEffect(() => { canFormatFileRef.current = canFormatFile; }, [canFormatFile]);
+  useEffect(() => { liveActiveFileRef.current = liveActiveFile; }, [liveActiveFile]);
+  useEffect(() => { setEditorSelection(null); }, [editorView.activeFileId]);
+  useEffect(() => { editorViewRef.current = editorView; }, [editorView]);
+  useEffect(() => { bottomPanelViewRef.current = bottomPanelView; }, [bottomPanelView]);
+  useEffect(() => { persistIdeTheme(ideThemeId); }, [ideThemeId]);
+  useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
 
+  // ── Room reset ──
   useEffect(() => {
-    isRunningCodeRef.current = isRunningCode;
-  }, [isRunningCode]);
-
-  useEffect(() => {
-    roomIdRef.current = roomId;
-  }, [roomId]);
-
-  useEffect(() => {
-    canFormatFileRef.current = canFormatFile;
-  }, [canFormatFile]);
-
-  useEffect(() => {
-    liveActiveFileRef.current = liveActiveFile;
-  }, [liveActiveFile]);
-
-  useEffect(() => {
-    editorViewRef.current = editorView;
-  }, [editorView]);
-
-  useEffect(() => {
-    bottomPanelViewRef.current = bottomPanelView;
-  }, [bottomPanelView]);
-
-  useEffect(() => {
-    persistIdeTheme(ideThemeId);
-  }, [ideThemeId]);
-
-  useEffect(() => {
-    workspaceRef.current = workspace;
-  }, [workspace]);
-
-  useEffect(() => {
-    const nextWorkspace = createFallbackWorkspace();
-
+    const next = createFallbackWorkspace();
     clearScheduledSync();
     pendingFileUpdateRef.current = null;
     applyingRemoteFileIdRef.current = null;
     latestCursorRef.current = null;
     activeRunIdRef.current = null;
     joinedParticipantNameRef.current = null;
-    workspaceRef.current = nextWorkspace;
-    setWorkspace(nextWorkspace);
-    setEditorView(normalizeEditorViewState(nextWorkspace, null));
+    workspaceRef.current = next;
+    setWorkspace(next);
+    setEditorView(normalizeEditorViewState(next, null));
     setConnectionStatus("connecting");
     setParticipants([createLocalParticipant(currentUserNameRef.current, currentUserId)]);
-    setSharedChatMessages([]);
-    setPrivateChatMessages([]);
-    setAiEditProposals([]);
-    setSnapshots([]);
-    setTerminalEntries([]);
-    setAiRequestMode(null);
-    setAiErrorMessage(null);
-    setIsRunningCode(false);
-    setConsoleStatus("idle");
-    setConsoleEntries([]);
-    setRemoteCursors([]);
-    setCurrentSocketId(null);
-    setPreviewSnapshotId(null);
-    setIsPresentationMode(false);
-    setInspectorView("preview");
-    setBottomPanelView("terminal");
-    setIsExplorerVisible(true);
-    setIsBottomPanelVisible(true);
-    setOmnibarMode("quick-open");
-    setIsOmnibarOpen(false);
-    setOmnibarQuery("");
-    setCommandPrompt(null);
-    setProjectImportState({
-      isImporting: false,
-      progress: null,
-      message: null,
-    });
-    setShareFeedback(null);
-    setEditorRevealRequest(null);
-
-    if (shareFeedbackTimerRef.current) {
-      clearTimeout(shareFeedbackTimerRef.current);
-      shareFeedbackTimerRef.current = null;
-    }
+    setSharedChatMessages([]); setPrivateChatMessages([]); setAiEditProposals([]); setAiBlocks([]); setSnapshots([]);
+    setTerminalEntries([]); setAiRequestMode(null); setAiErrorMessage(null); setAiBlockErrorMessage(null);
+    setIsAiBlockLoading(false); setIsRunningCode(false); setConsoleStatus("idle"); setConsoleEntries([]);
+    setRemoteCursors([]); setCurrentSocketId(null); setPreviewSnapshotId(null); setIsPresentationMode(false);
+    setInspectorView("preview"); setBottomPanelView("terminal"); setIsExplorerVisible(true); setIsBottomPanelVisible(true);
+    setOmnibarMode("quick-open"); setIsOmnibarOpen(false); setOmnibarQuery(""); setCommandPrompt(null);
+    setProjectImportState({ isImporting: false, progress: null, message: null });
+    setSaveState("saved"); setDirtyFileIds([]); setClosedTabHistory([]);
+    setRecentFileIds(loadRecentFiles(roomId)); setShowHiddenFiles(loadHiddenFilesPreference());
+    setShareFeedback(null); setEditorRevealRequest(null); setEditorSelection(null);
+    setActivityFeed([]); setSessionComments([]); setLastRunInfo(null);
+    setEditorCursorPos({ lineNumber: 1, column: 1 });
+    lastAiBlockSignatureRef.current = null;
+    if (aiBlockAutoSuggestTimerRef.current) { clearTimeout(aiBlockAutoSuggestTimerRef.current); aiBlockAutoSuggestTimerRef.current = null; }
+    if (shareFeedbackTimerRef.current) { clearTimeout(shareFeedbackTimerRef.current); shareFeedbackTimerRef.current = null; }
+    if (saveStateTimerRef.current) { clearTimeout(saveStateTimerRef.current); saveStateTimerRef.current = null; }
   }, [currentUserId, roomId]);
 
-  useEffect(() => {
-    return () => {
-      if (shareFeedbackTimerRef.current) {
-        clearTimeout(shareFeedbackTimerRef.current);
-      }
-    };
+  useEffect(() => () => {
+    if (shareFeedbackTimerRef.current) clearTimeout(shareFeedbackTimerRef.current);
+    if (aiBlockAutoSuggestTimerRef.current) clearTimeout(aiBlockAutoSuggestTimerRef.current);
+    if (saveStateTimerRef.current) clearTimeout(saveStateTimerRef.current);
   }, []);
 
-  useEffect(() => {
-    setIsEmptyWorkspacePromptDismissed(false);
-  }, [roomId]);
+  useEffect(() => { setIsEmptyWorkspacePromptDismissed(false); }, [roomId]);
+  useEffect(() => { if (workspaceFiles.length > 0) setIsEmptyWorkspacePromptDismissed(false); }, [workspaceFiles.length]);
 
   useEffect(() => {
-    if (workspaceFiles.length > 0) {
-      setIsEmptyWorkspacePromptDismissed(false);
-    }
-  }, [workspaceFiles.length]);
+    const valid = new Set(workspaceFiles.map((f) => f.id));
+    setDirtyFileIds((ids) => ids.filter((id) => valid.has(id)));
+    setClosedTabHistory((ids) => ids.filter((id) => valid.has(id)));
+    setRecentFileIds((ids) => ids.filter((id) => valid.has(id)));
+  }, [workspaceFiles]);
+
+  useEffect(() => { persistHiddenFilesPreference(showHiddenFiles); }, [showHiddenFiles]);
+  useEffect(() => { persistRecentFiles(roomId, recentFileIds); }, [recentFileIds, roomId]);
 
   useEffect(() => {
-    if (
-      previewSnapshotId &&
-      !snapshots.some((snapshot) => snapshot.id === previewSnapshotId)
-    ) {
-      setPreviewSnapshotId(snapshots[0]?.id ?? null);
-      setIsPresentationMode(false);
-    }
+    if (!editorView.activeFileId) return;
+    setRecentFileIds((ids) => [editorView.activeFileId, ...ids.filter((id) => id !== editorView.activeFileId)].slice(0, MAX_RECENT_FILE_IDS));
+  }, [editorView.activeFileId]);
 
-    if (!previewSnapshotId && snapshots.length > 0) {
-      setPreviewSnapshotId(snapshots[0].id);
+  useEffect(() => {
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      if (dirtyFileIds.length === 0) return;
+      e.preventDefault(); e.returnValue = "";
     }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [dirtyFileIds]);
+
+  useEffect(() => {
+    if (previewSnapshotId && !snapshots.some((s) => s.id === previewSnapshotId)) {
+      setPreviewSnapshotId(snapshots[0]?.id ?? null); setIsPresentationMode(false);
+    }
+    if (!previewSnapshotId && snapshots.length > 0) setPreviewSnapshotId(snapshots[0].id);
   }, [previewSnapshotId, snapshots]);
 
   useEffect(() => {
     currentUserNameRef.current = currentUserName;
-    setParticipants((currentParticipants) => {
-      if (currentSocketId) {
-        return currentParticipants.map((participant) =>
-          participant.socketId === currentSocketId
-            ? { ...participant, name: currentUserName, userId: currentUserId }
-            : participant,
-        );
-      }
-
-      if (currentParticipants.length === 0) {
-        return [createLocalParticipant(currentUserName, currentUserId)];
-      }
-
-      return currentParticipants.map((participant, index) =>
-        index === 0 && participant.socketId === "local-user"
-          ? { ...participant, name: currentUserName, userId: currentUserId }
-          : participant,
-      );
+    setParticipants((ps) => {
+      if (currentSocketId) return ps.map((p) => p.socketId === currentSocketId ? { ...p, name: currentUserName, userId: currentUserId } : p);
+      if (ps.length === 0) return [createLocalParticipant(currentUserName, currentUserId)];
+      return ps.map((p, i) => i === 0 && p.socketId === "local-user" ? { ...p, name: currentUserName, userId: currentUserId } : p);
     });
   }, [currentSocketId, currentUserId, currentUserName]);
 
-  function clearScheduledSync() {
-    if (!syncTimerRef.current) {
-      return;
-    }
+  useEffect(() => { dirtyFileIdsRef.current = dirtyFileIds; }, [dirtyFileIds]);
+  useEffect(() => { closedTabHistoryRef.current = closedTabHistory; }, [closedTabHistory]);
 
-    clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = null;
+  useEffect(() => {
+    if (aiBlockAutoSuggestTimerRef.current) { clearTimeout(aiBlockAutoSuggestTimerRef.current); aiBlockAutoSuggestTimerRef.current = null; }
+    if (connectionStatus !== "connected" || isPresentationMode || !liveActiveFile || liveActiveFile.content.trim().length < 24 || pendingAiBlocksForActiveFile.length > 0 || isAiBlockLoading) return;
+    const cursorLine = latestCursorRef.current?.fileId === liveActiveFile.id ? latestCursorRef.current.position.lineNumber : 1;
+    const signature = [roomId, liveActiveFile.id, liveActiveFile.content.length, cursorLine, liveActiveFile.content.slice(-120)].join(":");
+    if (lastAiBlockSignatureRef.current === signature) return;
+    aiBlockAutoSuggestTimerRef.current = setTimeout(() => {
+      lastAiBlockSignatureRef.current = signature;
+      const activeFile = liveActiveFileRef.current;
+      if (socketRef.current?.connected && activeFile) {
+        flushPendingFileUpdateRef.current();
+        setInspectorView("ai-blocks"); setAiBlockErrorMessage(null); setIsAiBlockLoading(true);
+        socketRef.current.emit("ai:block:create", { roomId: roomIdRef.current, fileId: activeFile.id, code: activeFile.content, cursorLine: latestCursorRef.current?.fileId === activeFile.id ? latestCursorRef.current.position.lineNumber : null, mode: "next-line", prompt: "Suggest one short, high-value code block or next logical continuation near the current cursor. Keep it reviewable and no more than 12 lines." });
+      }
+      aiBlockAutoSuggestTimerRef.current = null;
+    }, 5000);
+    return () => { if (aiBlockAutoSuggestTimerRef.current) { clearTimeout(aiBlockAutoSuggestTimerRef.current); aiBlockAutoSuggestTimerRef.current = null; } };
+  }, [connectionStatus, isAiBlockLoading, isPresentationMode, liveActiveFile, pendingAiBlocksForActiveFile.length, roomId]);
+
+  function clearScheduledSync() {
+    if (!syncTimerRef.current) return;
+    clearTimeout(syncTimerRef.current); syncTimerRef.current = null;
   }
 
   function showShareFeedback(message: string) {
     setShareFeedback(message);
-
-    if (shareFeedbackTimerRef.current) {
-      clearTimeout(shareFeedbackTimerRef.current);
-    }
-
-    shareFeedbackTimerRef.current = setTimeout(() => {
-      setShareFeedback(null);
-      shareFeedbackTimerRef.current = null;
-    }, 2200);
+    if (shareFeedbackTimerRef.current) clearTimeout(shareFeedbackTimerRef.current);
+    shareFeedbackTimerRef.current = setTimeout(() => { setShareFeedback(null); shareFeedbackTimerRef.current = null; }, 2200);
   }
 
-  function openOmnibar(mode: WorkspaceOmnibarMode) {
-    setOmnibarMode(mode);
-    setOmnibarQuery("");
-    setCommandPrompt(null);
-    setIsOmnibarOpen(true);
-  }
-
-  function closeOmnibar() {
-    setIsOmnibarOpen(false);
-    setOmnibarQuery("");
-    setCommandPrompt(null);
-  }
+  function openOmnibar(mode: WorkspaceOmnibarMode) { setOmnibarMode(mode); setOmnibarQuery(""); setCommandPrompt(null); setIsOmnibarOpen(true); }
+  function closeOmnibar() { setIsOmnibarOpen(false); setOmnibarQuery(""); setCommandPrompt(null); }
 
   function openPreviewInspector() {
     setInspectorView("preview");
-    emitWorkspacePreviewUpdate(
-      true,
-      inspectorActiveFile?.id ?? liveActiveFile?.id ?? null,
-    );
+    emitWorkspacePreviewUpdate(true, inspectorActiveFile?.id ?? liveActiveFile?.id ?? null);
   }
 
-  function handleToggleExplorer() {
-    setIsExplorerVisible((currentState) => !currentState);
-  }
+  function handleToggleExplorer() { setIsExplorerVisible((s) => !s); }
 
-  function handleSelectBottomPanelView(nextView: BottomPanelView) {
-    setBottomPanelView(nextView);
-    setIsBottomPanelVisible(true);
-  }
-
-  function handleToggleBottomPanel(nextView: BottomPanelView = "terminal") {
-    setBottomPanelView(nextView);
-    setIsBottomPanelVisible(
-      (currentState) => !(currentState && bottomPanelView === nextView),
-    );
+  function handleSelectBottomPanelView(next: BottomPanelView) { setBottomPanelView(next); setIsBottomPanelVisible(true); }
+  function handleToggleBottomPanel(next: BottomPanelView = "terminal") {
+    setBottomPanelView(next);
+    setIsBottomPanelVisible((s) => !(s && bottomPanelView === next));
   }
 
   function handleOpenFileFromOmnibar(fileId: string, lineNumber?: number) {
-    if (lineNumber) {
-      setEditorRevealRequest({
-        fileId,
-        lineNumber,
-        nonce: Date.now(),
-      });
-    }
-
-    handleSelectFile(fileId);
-    closeOmnibar();
+    if (lineNumber) setEditorRevealRequest({ fileId, lineNumber, nonce: Date.now() });
+    handleSelectFile(fileId); closeOmnibar();
   }
 
   function handleSelectCommand(commandId: string) {
-    if (commandId === "create-file") {
-      setCommandPrompt({
-        commandId,
-        title: "Create File",
-        description:
-          "Create a new file beside the active file, or at the workspace root if no file is active.",
-        label: "File name",
-        placeholder: "untitled.js",
-        defaultValue: "untitled.js",
-        submitLabel: "Create File",
-      });
-      return;
-    }
-
-    if (commandId === "create-folder") {
-      setCommandPrompt({
-        commandId,
-        title: "Create Folder",
-        description:
-          "Create a new folder beside the active file, or at the workspace root if no file is active.",
-        label: "Folder name",
-        placeholder: "new-folder",
-        defaultValue: "new-folder",
-        submitLabel: "Create Folder",
-      });
-      return;
-    }
-
-    if (commandId === "rename-active" && liveActiveFile) {
-      setCommandPrompt({
-        commandId,
-        title: "Rename Active File",
-        description:
-          "Rename the current file. You can change the extension too, and the editor language will follow.",
-        label: "New file name",
-        placeholder: liveActiveFile.name,
-        defaultValue: liveActiveFile.name,
-        submitLabel: "Rename File",
-      });
-      return;
-    }
-
-    if (commandId === "format-active") {
-      handleFormatActiveFile();
-      closeOmnibar();
-      return;
-    }
-
-    if (commandId === "run-active") {
-      void handleRunCode();
-      closeOmnibar();
-      return;
-    }
-
-    if (commandId === "open-preview") {
-      openPreviewInspector();
-      closeOmnibar();
-      return;
-    }
-
-    if (commandId === "toggle-explorer") {
-      handleToggleExplorer();
-      closeOmnibar();
-      return;
-    }
-
-    if (commandId === "toggle-terminal") {
-      handleToggleBottomPanel("terminal");
-      closeOmnibar();
-      return;
-    }
-
-    if (commandId.startsWith("theme:")) {
-      handleThemeChange(commandId.replace("theme:", "") as IdeThemeId);
-      closeOmnibar();
-    }
+    if (commandId === "create-file") { setCommandPrompt({ commandId, title: "Create File", description: "New file in workspace.", label: "File name", placeholder: "untitled.js", defaultValue: "untitled.js", submitLabel: "Create" }); return; }
+    if (commandId === "create-folder") { setCommandPrompt({ commandId, title: "Create Folder", description: "New folder in workspace.", label: "Folder name", placeholder: "new-folder", defaultValue: "new-folder", submitLabel: "Create" }); return; }
+    if (commandId === "rename-active" && liveActiveFile) { setCommandPrompt({ commandId, title: "Rename", description: `Rename ${liveActiveFile.name}`, label: "New name", placeholder: liveActiveFile.name, defaultValue: liveActiveFile.name, submitLabel: "Rename" }); return; }
+    if (commandId === "format-active") { handleFormatActiveFile(); closeOmnibar(); return; }
+    if (commandId === "run-active") { void handleRunCode(); closeOmnibar(); return; }
+    if (commandId === "reopen-closed-tab") { handleReopenClosedTab(); closeOmnibar(); return; }
+    if (commandId === "open-preview") { openPreviewInspector(); closeOmnibar(); return; }
+    if (commandId === "toggle-explorer") { handleToggleExplorer(); closeOmnibar(); return; }
+    if (commandId === "toggle-terminal") { handleToggleBottomPanel("terminal"); closeOmnibar(); return; }
+    if (commandId === "download-workspace") { void handleDownloadWorkspace(); closeOmnibar(); return; }
+    if (commandId.startsWith("template:")) { handleCreateTemplate(commandId.replace("template:", "") as WorkspaceTemplateKind); closeOmnibar(); return; }
+    if (commandId === "summarize-project") { handleSummarizeProject(); closeOmnibar(); return; }
+    if (commandId === "keyboard-shortcuts") { setShortcutsOpen(true); closeOmnibar(); return; }
+    if (commandId.startsWith("theme:")) { handleThemeChange(commandId.replace("theme:", "") as IdeThemeId); closeOmnibar(); }
   }
 
   function handleSubmitCommandPrompt(value: string) {
-    const trimmedValue = value.trim();
-
-    if (!commandPrompt || !trimmedValue) {
-      return;
-    }
-
-    if (commandPrompt.commandId === "create-file") {
-      handleCreateFile(liveActiveFile?.parentId ?? null, trimmedValue);
-      closeOmnibar();
-      return;
-    }
-
-    if (commandPrompt.commandId === "create-folder") {
-      handleCreateFolder(liveActiveFile?.parentId ?? null, trimmedValue);
-      closeOmnibar();
-      return;
-    }
-
-    if (commandPrompt.commandId === "rename-active" && liveActiveFile) {
-      handleRename(liveActiveFile.id, trimmedValue);
-      closeOmnibar();
-    }
+    const v = value.trim();
+    if (!commandPrompt || !v) return;
+    if (commandPrompt.commandId === "create-file") { handleCreateFile(liveActiveFile?.parentId ?? null, v); closeOmnibar(); return; }
+    if (commandPrompt.commandId === "create-folder") { handleCreateFolder(liveActiveFile?.parentId ?? null, v); closeOmnibar(); return; }
+    if (commandPrompt.commandId === "rename-active" && liveActiveFile) { handleRename(liveActiveFile.id, v); closeOmnibar(); }
   }
 
   function flushPendingFileUpdate() {
     clearScheduledSync();
-
-    const pendingFileUpdate = pendingFileUpdateRef.current;
+    const pending = pendingFileUpdateRef.current;
     const socket = socketRef.current;
-
-    if (!pendingFileUpdate || !socket?.connected) {
-      return;
-    }
-
+    if (!pending || !socket?.connected) return;
+    setSaveState("saving");
     pendingFileUpdateRef.current = null;
-    socket.emit("workspace:file:update", {
-      roomId,
-      fileId: pendingFileUpdate.fileId,
-      content: pendingFileUpdate.content,
-    });
+    socket.emit("workspace:file:update", { roomId: roomIdRef.current, fileId: pending.fileId, content: pending.content });
+    setDirtyFileIds((ids) => ids.filter((id) => id !== pending.fileId));
+    if (saveStateTimerRef.current) clearTimeout(saveStateTimerRef.current);
+    saveStateTimerRef.current = setTimeout(() => { if (!pendingFileUpdateRef.current && dirtyFileIdsRef.current.length === 0) setSaveState("saved"); saveStateTimerRef.current = null; }, 140);
   }
 
   flushPendingFileUpdateRef.current = flushPendingFileUpdate;
   showShareFeedbackRef.current = showShareFeedback;
 
   function scheduleFileSync() {
-    if (syncTimerRef.current) {
-      return;
-    }
-
-    syncTimerRef.current = setTimeout(() => {
-      flushPendingFileUpdate();
-    }, DOCUMENT_SYNC_DELAY_MS);
+    if (syncTimerRef.current) return;
+    syncTimerRef.current = setTimeout(() => { flushPendingFileUpdate(); }, DOCUMENT_SYNC_DELAY_MS);
   }
 
-  function emitWorkspaceViewUpdate(nextView: EditorViewState) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:view:update", {
-      roomId,
-      activeFileId: nextView.activeFileId,
-      openFileIds: nextView.openFileIds,
-    });
+  function emitWorkspaceViewUpdate(next: EditorViewState) {
+    if (!socketRef.current?.connected) return;
+    socketRef.current.emit("workspace:view:update", { roomId: roomIdRef.current, activeFileId: next.activeFileId, openFileIds: next.openFileIds });
   }
 
-  function emitWorkspacePreviewUpdate(
-    isVisible: boolean,
-    targetFileId: string | null,
-  ) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:preview:update", {
-      roomId,
-      isVisible,
-      targetFileId,
-    });
+  function emitWorkspacePreviewUpdate(isVisible: boolean, targetFileId: string | null) {
+    if (!socketRef.current?.connected) return;
+    socketRef.current.emit("workspace:preview:update", { roomId: roomIdRef.current, isVisible, targetFileId });
   }
 
   const applyRemoteFileUpdate = useCallback((fileId: string, content: string) => {
     clearScheduledSync();
-
-    if (pendingFileUpdateRef.current?.fileId === fileId) {
-      pendingFileUpdateRef.current = null;
-    }
-
+    if (pendingFileUpdateRef.current?.fileId === fileId) pendingFileUpdateRef.current = null;
     applyingRemoteFileIdRef.current = fileId;
-    setWorkspace((currentWorkspace) =>
-      updateWorkspaceFileContent(currentWorkspace, fileId, content),
-    );
-
-    queueMicrotask(() => {
-      applyingRemoteFileIdRef.current = null;
-    });
+    setWorkspace((ws) => updateWorkspaceFileContent(ws, fileId, content));
+    queueMicrotask(() => { applyingRemoteFileIdRef.current = null; });
   }, []);
 
   const appendRunOutput = useCallback((payload: RunOutputPayload) => {
-    if (!payload.chunk.trim()) {
-      return;
-    }
-
-    const nextEntry = createConsoleEntry(
-      payload.stream,
-      payload.chunk,
-      `${payload.runId}-${payload.timestamp}`,
-    );
-
-    setConsoleEntries((currentEntries) => {
-      if (activeRunIdRef.current !== payload.runId) {
-        activeRunIdRef.current = payload.runId;
-        return [nextEntry];
-      }
-
-      return [...currentEntries, nextEntry];
+    if (!payload.chunk.trim()) return;
+    const entry = createConsoleEntry(payload.stream, payload.chunk, `${payload.runId}-${payload.timestamp}`);
+    setConsoleEntries((es) => {
+      if (activeRunIdRef.current !== payload.runId) { activeRunIdRef.current = payload.runId; return [entry]; }
+      return [...es, entry];
     });
-
-    setConsoleStatus("running");
-    setIsRunningCode(true);
+    setConsoleStatus("running"); setIsRunningCode(true);
   }, []);
 
   const completeRun = useCallback((payload: RunDonePayload) => {
-    if (activeRunIdRef.current && activeRunIdRef.current !== payload.runId) {
-      return;
-    }
-
+    if (activeRunIdRef.current && activeRunIdRef.current !== payload.runId) return;
     activeRunIdRef.current = payload.runId;
-    setConsoleEntries((currentEntries) => [
-      ...currentEntries,
-      createConsoleEntry(
-        "system",
-        payload.status === "completed"
-          ? `Run completed with exit code ${payload.exitCode}.`
-          : `Run failed with exit code ${payload.exitCode}.`,
-        `${payload.runId}-done`,
-      ),
-    ]);
+    setConsoleEntries((es) => [...es, createConsoleEntry("system", payload.status === "completed" ? `Process exited with code ${payload.exitCode}.` : `Process failed with code ${payload.exitCode}.`, `${payload.runId}-done`)]);
     setConsoleStatus(payload.status === "completed" ? "completed" : "error");
     setIsRunningCode(false);
+    setLastRunInfo({ exitCode: payload.exitCode, failed: payload.status !== "completed" });
   }, []);
 
+  // ── Socket setup ──
   useEffect(() => {
     const socket = createSocketClient();
     socketRef.current = socket;
 
-    socket.on("connect", () => {
-      setConnectionStatus("connected");
-      setCurrentSocketId(socket.id ?? null);
-      joinedParticipantNameRef.current = currentUserNameRef.current;
-      socket.emit("room:join", {
-        roomId,
-        name: currentUserNameRef.current,
-        userId: currentUserId,
-      });
-    });
-
+    socket.on("connect", () => { setConnectionStatus("connected"); setCurrentSocketId(socket.id ?? null); joinedParticipantNameRef.current = currentUserNameRef.current; socket.emit("room:join", { roomId, name: currentUserNameRef.current, userId: currentUserId }); });
     socket.on("disconnect", () => {
-      const didInterruptActiveRun = isRunningCodeRef.current;
-
-      setConnectionStatus("disconnected");
-      setCurrentSocketId(null);
-      setAiRequestMode(null);
-      setIsRunningCode(false);
-      setRemoteCursors([]);
-      setParticipants([createLocalParticipant(currentUserNameRef.current, currentUserId)]);
+      const wasRunning = isRunningCodeRef.current;
+      setConnectionStatus("disconnected"); setCurrentSocketId(null); setAiRequestMode(null); setIsAiBlockLoading(false); setIsRunningCode(false);
+      setSaveState(pendingFileUpdateRef.current || dirtyFileIdsRef.current.length > 0 ? "unsaved" : "saved");
+      setRemoteCursors([]); setParticipants([createLocalParticipant(currentUserNameRef.current, currentUserId)]);
       joinedParticipantNameRef.current = null;
-
-      if (didInterruptActiveRun) {
-        activeRunIdRef.current = null;
-        setConsoleStatus("error");
-        setConsoleEntries((currentEntries) => [
-          ...currentEntries,
-          createConsoleEntry(
-            "stderr",
-            "Connection lost while the run was in progress.",
-            `run-disconnect-${Date.now()}`,
-          ),
-        ]);
-      }
+      if (wasRunning) { activeRunIdRef.current = null; setConsoleStatus("error"); setConsoleEntries((es) => [...es, createConsoleEntry("stderr", "Connection lost during run.", `run-disconnect-${Date.now()}`)]); }
     });
-
     socket.on("room:state", (room) => {
-      if (room.roomId !== roomId) {
-        return;
-      }
-
-      clearScheduledSync();
-      pendingFileUpdateRef.current = null;
-      workspaceRef.current = room.workspace;
-      setWorkspace(room.workspace);
-      setEditorView((currentView) =>
-        normalizeEditorViewState(room.workspace, currentView, room.workspace),
-      );
-      setParticipants(room.participants);
-      setSnapshots(room.snapshots);
-      setTerminalEntries(room.terminalEntries);
-      setAiRequestMode(null);
-      setInspectorView((currentView) =>
-        room.ui?.preview?.isVisible
-          ? "preview"
-          : currentView === "preview"
-            ? "private-ai"
-            : currentView,
-      );
-      if (
-        room.ui?.theme &&
-        IDE_THEMES.some((theme) => theme.id === room.ui?.theme)
-      ) {
-        setIdeThemeId(room.ui.theme as IdeThemeId);
-      }
-      setRemoteCursors((currentCursors) =>
-        currentCursors.filter((cursor) =>
-          room.participants.some(
-            (participant: Participant) => participant.socketId === cursor.socketId,
-          ),
-        ),
-      );
+      if (room.roomId !== roomId) return;
+      clearScheduledSync(); pendingFileUpdateRef.current = null; setSaveState("saved"); setDirtyFileIds([]);
+      workspaceRef.current = room.workspace; setWorkspace(room.workspace);
+      setEditorView((v) => normalizeEditorViewState(room.workspace, v, room.workspace));
+      setParticipants(room.participants); setAiBlocks(room.aiBlocks); setSnapshots(room.snapshots);
+      setTerminalEntries(room.terminalEntries); setAiRequestMode(null); setAiBlockErrorMessage(null); setIsAiBlockLoading(false);
+      setActivityFeed(room.activityFeed ?? []);
+      setSessionComments(room.sessionComments ?? []);
+      setInspectorView((v) => room.ui?.preview?.isVisible ? "preview" : v === "preview" ? "private-ai" : v);
+      if (room.ui?.theme && IDE_THEMES.some((t) => t.id === room.ui?.theme)) setIdeThemeId(room.ui.theme as IdeThemeId);
+      setRemoteCursors((cs) => cs.filter((c) => room.participants.some((p: Participant) => p.socketId === c.socketId)));
     });
-
-    socket.on("room:participants", (nextParticipants) => {
-      setParticipants(
-        nextParticipants.length > 0
-          ? nextParticipants
-          : [createLocalParticipant(currentUserNameRef.current, currentUserId)],
-      );
-      setRemoteCursors((currentCursors) =>
-        currentCursors.filter((cursor) =>
-          nextParticipants.some(
-            (participant: Participant) => participant.socketId === cursor.socketId,
-          ),
-        ),
-      );
+    socket.on("session:activity", (ev) => {
+      if (ev.roomId !== roomId) return;
+      setActivityFeed((prev) => [ev, ...prev.filter((x) => x.id !== ev.id)].slice(0, 80));
     });
-
-    socket.on("workspace:file:updated", ({ fileId, content }) => {
-      applyRemoteFileUpdate(fileId, content);
+    socket.on("session:comment:created", ({ comment }) => {
+      if (comment.roomId !== roomId) return;
+      setSessionComments((prev) => [comment, ...prev.filter((c) => c.id !== comment.id)].slice(0, 200));
     });
-
-    socket.on("workspace:view", ({ roomId: updatedRoomId, activeFileId, openFileIds }) => {
-      if (updatedRoomId !== roomId) {
-        return;
-      }
-
-      setEditorView((currentView) =>
-        normalizeEditorViewState(workspaceRef.current, currentView, {
-          activeFileId,
-          openFileIds,
-        }),
-      );
+    socket.on("room:participants", (ps) => {
+      setParticipants(ps.length > 0 ? ps : [createLocalParticipant(currentUserNameRef.current, currentUserId)]);
+      setRemoteCursors((cs) => cs.filter((c) => ps.some((p: Participant) => p.socketId === c.socketId)));
     });
-
-    socket.on(
-      "workspace:file:language",
-      ({ roomId: updatedRoomId, fileId, language }) => {
-        if (updatedRoomId !== roomId) {
-          return;
-        }
-
-        setWorkspace((currentWorkspace) =>
-          updateWorkspaceFileLanguage(currentWorkspace, fileId, language),
-        );
-      },
-    );
-
-    socket.on("workspace:preview", ({ roomId: updatedRoomId, preview }) => {
-      if (updatedRoomId !== roomId) {
-        return;
-      }
-
-      setInspectorView((currentView) =>
-        preview.isVisible
-          ? "preview"
-          : currentView === "preview"
-            ? "private-ai"
-            : currentView,
-      );
-    });
-
-    socket.on("workspace:theme", ({ roomId: updatedRoomId, theme }) => {
-      if (
-        updatedRoomId !== roomId ||
-        !IDE_THEMES.some((currentTheme) => currentTheme.id === theme)
-      ) {
-        return;
-      }
-
-      setIdeThemeId(theme as IdeThemeId);
-    });
-
-    socket.on("cursor:updated", (cursor) => {
-      if (cursor.socketId === socket.id) {
-        return;
-      }
-
-      setRemoteCursors((currentCursors) => {
-        const remainingCursors = currentCursors.filter(
-          (currentCursor) => currentCursor.socketId !== cursor.socketId,
-        );
-
-        return [...remainingCursors, cursor];
-      });
-    });
-
-    socket.on("cursor:cleared", ({ socketId }) => {
-      setRemoteCursors((currentCursors) =>
-        currentCursors.filter((cursor) => cursor.socketId !== socketId),
-      );
-    });
-
-    socket.on("run:output", (payload) => {
-      if (payload.roomId !== roomId) {
-        return;
-      }
-
-      appendRunOutput(payload);
-    });
-
-    socket.on("run:done", (payload) => {
-      if (payload.roomId !== roomId) {
-        return;
-      }
-
-      completeRun(payload);
-    });
-
-    socket.on("chat:shared:init", ({ roomId: initializedRoomId, messages }) => {
-      if (initializedRoomId !== roomId) {
-        return;
-      }
-
-      setSharedChatMessages(messages);
-    });
-
-    socket.on("chat:shared:message", ({ message }) => {
-      if (message.roomId !== roomId) {
-        return;
-      }
-
-      setSharedChatMessages((currentMessages) =>
-        [...currentMessages, message].slice(-200),
-      );
-    });
-
-    socket.on("chat:private:init", ({ roomId: initializedRoomId, messages }) => {
-      if (initializedRoomId !== roomId) {
-        return;
-      }
-
-      setPrivateChatMessages(messages);
-    });
-
-    socket.on("chat:private:message", ({ message }) => {
-      if (message.roomId !== roomId) {
-        return;
-      }
-
-      setPrivateChatMessages((currentMessages) =>
-        [...currentMessages, message].slice(-120),
-      );
-    });
-
-    socket.on("ai:proposal:init", ({ roomId: initializedRoomId, proposals }) => {
-      if (initializedRoomId !== roomId) {
-        return;
-      }
-
-      setAiEditProposals(proposals);
-    });
-
-    socket.on("ai:proposal:created", ({ proposal }) => {
-      setAiEditProposals((currentProposals) => {
-        const remainingProposals = currentProposals.filter(
-          (currentProposal) => currentProposal.id !== proposal.id,
-        );
-
-        return [proposal, ...remainingProposals].sort((left, right) =>
-          right.createdAt.localeCompare(left.createdAt),
-        );
-      });
-      setAiErrorMessage(null);
-      setAiRequestMode(null);
-      setInspectorView("private-ai");
-    });
-
-    socket.on("ai:proposal:updated", ({ proposal }) => {
-      setAiEditProposals((currentProposals) => {
-        const hasExistingProposal = currentProposals.some(
-          (currentProposal) => currentProposal.id === proposal.id,
-        );
-        const nextProposals = hasExistingProposal
-          ? currentProposals.map((currentProposal) =>
-              currentProposal.id === proposal.id ? proposal : currentProposal,
-            )
-          : [proposal, ...currentProposals];
-
-        return nextProposals.sort((left, right) =>
-          right.createdAt.localeCompare(left.createdAt),
-        );
-      });
-    });
-
-    socket.on("ai:proposal:error", ({ roomId: updatedRoomId, message }) => {
-      if (updatedRoomId !== roomId) {
-        return;
-      }
-
-      setAiErrorMessage(message);
-      setAiRequestMode(null);
-      setInspectorView("private-ai");
-    });
-
-    socket.on("snapshot:created", ({ snapshot }) => {
-      setSnapshots((currentSnapshots) => {
-        const nextSnapshots = [
-          snapshot,
-          ...currentSnapshots.filter(
-            (currentSnapshot) => currentSnapshot.id !== snapshot.id,
-          ),
-        ];
-
-        return nextSnapshots.slice(0, 12);
-      });
-    });
-
-    socket.on("terminal:history:init", ({ roomId: initializedRoomId, entries }) => {
-      if (initializedRoomId !== roomId) {
-        return;
-      }
-
-      setTerminalEntries(entries);
-    });
-
-    socket.on("terminal:entry", ({ entry }) => {
-      if (entry.roomId !== roomId) {
-        return;
-      }
-
-      setTerminalEntries((currentEntries) => [...currentEntries, entry].slice(-600));
-    });
-
-    socket.on("terminal:systemMessage", ({ entry }) => {
-      if (entry.roomId !== roomId) {
-        return;
-      }
-
-      setTerminalEntries((currentEntries) => [...currentEntries, entry].slice(-600));
-    });
-
-    socket.on("terminal:clear", ({ roomId: clearedRoomId }) => {
-      if (clearedRoomId !== roomId) {
-        return;
-      }
-
-      setTerminalEntries([]);
-    });
-
-    socket.on("workspace:tree", ({ workspace: incomingWorkspace }) => {
-      clearScheduledSync();
-      pendingFileUpdateRef.current = null;
-      workspaceRef.current = incomingWorkspace;
-      setWorkspace((currentWorkspace) => {
-        const nextWorkspace = applyWorkspaceTreeUpdate(currentWorkspace, incomingWorkspace);
-        setEditorView((currentView) =>
-          normalizeEditorViewState(nextWorkspace, currentView, incomingWorkspace),
-        );
-        return nextWorkspace;
-      });
-    });
-
-    socket.on("workspace:tab:closed", ({ activeFileId, openFileIds }) => {
-      setEditorView((currentView) =>
-        normalizeEditorViewState(workspaceRef.current, currentView, {
-          activeFileId,
-          openFileIds,
-        }),
-      );
-    });
+    socket.on("workspace:file:updated", ({ fileId, content }) => applyRemoteFileUpdate(fileId, content));
+    socket.on("workspace:view", ({ roomId: rid, activeFileId, openFileIds }) => { if (rid !== roomId) return; setEditorView((v) => normalizeEditorViewState(workspaceRef.current, v, { activeFileId, openFileIds })); });
+    socket.on("workspace:file:language", ({ roomId: rid, fileId, language }) => { if (rid !== roomId) return; setWorkspace((ws) => updateWorkspaceFileLanguage(ws, fileId, language)); });
+    socket.on("workspace:preview", ({ roomId: rid, preview }) => { if (rid !== roomId) return; setInspectorView((v) => preview.isVisible ? "preview" : v === "preview" ? "private-ai" : v); });
+    socket.on("workspace:theme", ({ roomId: rid, theme }) => { if (rid !== roomId || !IDE_THEMES.some((t) => t.id === theme)) return; setIdeThemeId(theme as IdeThemeId); });
+    socket.on("cursor:updated", (cursor) => { if (cursor.socketId === socket.id) return; setRemoteCursors((cs) => [...cs.filter((c) => c.socketId !== cursor.socketId), cursor]); });
+    socket.on("cursor:cleared", ({ socketId }) => { setRemoteCursors((cs) => cs.filter((c) => c.socketId !== socketId)); });
+    socket.on("run:output", (payload) => { if (payload.roomId !== roomId) return; appendRunOutput(payload); });
+    socket.on("run:done", (payload) => { if (payload.roomId !== roomId) return; completeRun(payload); });
+    socket.on("chat:shared:init", ({ roomId: rid, messages }) => { if (rid !== roomId) return; setSharedChatMessages(messages); });
+    socket.on("chat:shared:message", ({ message }) => { if (message.roomId !== roomId) return; setSharedChatMessages((ms) => upsertChatMessage(ms, message, MAX_SHARED_CHAT_MESSAGES)); });
+    socket.on("chat:shared:message:updated", ({ message }) => { if (message.roomId !== roomId) return; setSharedChatMessages((ms) => upsertChatMessage(ms, message, MAX_SHARED_CHAT_MESSAGES)); });
+    socket.on("chat:private:init", ({ roomId: rid, messages }) => { if (rid !== roomId) return; setPrivateChatMessages(messages); });
+    socket.on("chat:private:message", ({ message }) => { if (message.roomId !== roomId) return; setPrivateChatMessages((ms) => upsertChatMessage(ms, message, MAX_PRIVATE_CHAT_MESSAGES)); if (message.authorType !== "user") setAiRequestMode(null); });
+    socket.on("chat:private:message:updated", ({ message }) => { if (message.roomId !== roomId) return; setPrivateChatMessages((ms) => upsertChatMessage(ms, message, MAX_PRIVATE_CHAT_MESSAGES)); if (message.authorType !== "user") setAiRequestMode(null); });
+    socket.on("ai:proposal:init", ({ roomId: rid, proposals }) => { if (rid !== roomId) return; setAiEditProposals(proposals); });
+    socket.on("ai:proposal:created", ({ proposal }) => { setAiEditProposals((ps) => [proposal, ...ps.filter((p) => p.id !== proposal.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setAiErrorMessage(null); setAiRequestMode(null); setInspectorView("private-ai"); });
+    socket.on("ai:proposal:updated", ({ proposal }) => { setAiEditProposals((ps) => { const has = ps.some((p) => p.id === proposal.id); return (has ? ps.map((p) => p.id === proposal.id ? proposal : p) : [proposal, ...ps]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }); });
+    socket.on("ai:proposal:error", ({ roomId: rid, message }) => { if (rid !== roomId) return; setAiErrorMessage(message); setAiRequestMode(null); setInspectorView("private-ai"); });
+    socket.on("ai:block:created", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => [block, ...bs.filter((b) => b.id !== block.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setAiBlockErrorMessage(null); setIsAiBlockLoading(false); setInspectorView("ai-blocks"); });
+    socket.on("ai:block:updated", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => { const has = bs.some((b) => b.id === block.id); return (has ? bs.map((b) => b.id === block.id ? block : b) : [block, ...bs]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }); });
+    socket.on("ai:block:error", ({ roomId: rid, message }) => { if (rid !== roomId) return; lastAiBlockSignatureRef.current = null; setAiBlockErrorMessage(message); setIsAiBlockLoading(false); setInspectorView("ai-blocks"); });
+    socket.on("snapshot:created", ({ snapshot }) => { setSnapshots((ss) => [snapshot, ...ss.filter((s) => s.id !== snapshot.id)].slice(0, 12)); });
+    socket.on("terminal:history:init", ({ roomId: rid, entries }) => { if (rid !== roomId) return; setTerminalEntries(entries); });
+    socket.on("terminal:entry", ({ entry }) => { if (entry.roomId !== roomId) return; setTerminalEntries((es) => [...es, entry].slice(-600)); });
+    socket.on("terminal:systemMessage", ({ entry }) => { if (entry.roomId !== roomId) return; setTerminalEntries((es) => [...es, entry].slice(-600)); });
+    socket.on("terminal:clear", ({ roomId: rid }) => { if (rid !== roomId) return; setTerminalEntries([]); });
+    socket.on("workspace:tree", ({ workspace: ws }) => { clearScheduledSync(); pendingFileUpdateRef.current = null; workspaceRef.current = ws; setWorkspace((cur) => { const next = applyWorkspaceTreeUpdate(cur, ws); setEditorView((v) => normalizeEditorViewState(next, v, ws)); return next; }); });
+    socket.on("workspace:tab:closed", ({ activeFileId, openFileIds }) => { setEditorView((v) => normalizeEditorViewState(workspaceRef.current, v, { activeFileId, openFileIds })); });
 
     socket.connect();
-
-    return () => {
-      clearScheduledSync();
-      socket.removeAllListeners();
-      socket.disconnect();
-      socketRef.current = null;
-    };
+    return () => { clearScheduledSync(); socket.removeAllListeners(); socket.disconnect(); socketRef.current = null; };
   }, [appendRunOutput, applyRemoteFileUpdate, completeRun, currentUserId, roomId]);
 
   useEffect(() => {
     const socket = socketRef.current;
-
-    if (!socket?.connected) {
-      return;
-    }
-
-    if (joinedParticipantNameRef.current === currentUserName) {
-      return;
-    }
-
+    if (!socket?.connected || joinedParticipantNameRef.current === currentUserName) return;
     joinedParticipantNameRef.current = currentUserName;
-    socket.emit("room:join", {
-      roomId,
-      name: currentUserName,
-      userId: currentUserId,
-    });
+    socket.emit("room:join", { roomId, name: currentUserName, userId: currentUserId });
   }, [currentUserId, currentUserName, roomId]);
 
+  // ── Keyboard shortcuts ──
   useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (isNativeTextInputTarget(event.target)) {
-        return;
-      }
-
-      const key = event.key.toLowerCase();
-      const isPrimaryModifier = event.metaKey || event.ctrlKey;
-
-      if (isPrimaryModifier && event.shiftKey && key === "p") {
-        event.preventDefault();
-        setOmnibarMode("command");
-        setOmnibarQuery("");
-        setCommandPrompt(null);
-        setIsOmnibarOpen(true);
-        return;
-      }
-
-      if (isPrimaryModifier && key === "p") {
-        event.preventDefault();
-        setOmnibarMode("quick-open");
-        setOmnibarQuery("");
-        setCommandPrompt(null);
-        setIsOmnibarOpen(true);
-        return;
-      }
-
-      if (event.shiftKey && event.altKey && key === "f") {
-        const activeFile = liveActiveFileRef.current;
-
-        if (!activeFile || !canFormatFileRef.current || !socketRef.current?.connected) {
-          return;
-        }
-
-        event.preventDefault();
-        flushPendingFileUpdateRef.current();
-        socketRef.current.emit("workspace:file:format", {
-          roomId: roomIdRef.current,
-          fileId: activeFile.id,
-        });
-        return;
-      }
-
-      if (isPrimaryModifier && key === "s") {
-        event.preventDefault();
-        if (!liveActiveFileRef.current) {
-          showShareFeedbackRef.current("No active file");
-          return;
-        }
-
-        flushPendingFileUpdateRef.current();
-        showShareFeedbackRef.current("Workspace synced");
-        return;
-      }
-
-      if (isPrimaryModifier && key === "b") {
-        event.preventDefault();
-        setIsExplorerVisible((currentState) => !currentState);
-        return;
-      }
-
-      if (isPrimaryModifier && key === "j") {
-        event.preventDefault();
-        setBottomPanelView("terminal");
-        setIsBottomPanelVisible(
-          (currentState) =>
-            !(currentState && bottomPanelViewRef.current === "terminal"),
-        );
-        return;
-      }
-
-      if (isPrimaryModifier && key === "w") {
-        const activeFile = liveActiveFileRef.current;
-        const currentEditorView = editorViewRef.current;
-
-        if (!activeFile) {
-          return;
-        }
-
-        event.preventDefault();
-        flushPendingFileUpdateRef.current();
-
-        const closedTabIndex = currentEditorView.openFileIds.indexOf(activeFile.id);
-
-        if (closedTabIndex < 0) {
-          return;
-        }
-
-        const nextOpenFileIds = currentEditorView.openFileIds.filter(
-          (openFileId) => openFileId !== activeFile.id,
-        );
-        const nextActiveFileId =
-          currentEditorView.activeFileId === activeFile.id
-            ? nextOpenFileIds[closedTabIndex] ??
-              nextOpenFileIds[closedTabIndex - 1] ??
-              ""
-            : currentEditorView.activeFileId;
-        const nextView = normalizeEditorViewState(
-          workspaceRef.current,
-          currentEditorView,
-          {
-            activeFileId: nextActiveFileId,
-            openFileIds: nextOpenFileIds,
-          },
-        );
-
-        editorViewRef.current = nextView;
-        setEditorView(nextView);
-
-        if (!socketRef.current?.connected) {
-          return;
-        }
-
-        socketRef.current.emit("workspace:tab:close", {
-          roomId: roomIdRef.current,
-          fileId: activeFile.id,
-        });
-      }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (isNativeTextInputTarget(e.target)) return;
+      const key = e.key.toLowerCase();
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.shiftKey && key === "p") { e.preventDefault(); setOmnibarMode("command"); setOmnibarQuery(""); setCommandPrompt(null); setIsOmnibarOpen(true); return; }
+      if (mod && e.shiftKey && key === "f") { e.preventDefault(); setOmnibarMode("search"); setOmnibarQuery(""); setCommandPrompt(null); setIsOmnibarOpen(true); return; }
+      if (mod && key === "p") { e.preventDefault(); setOmnibarMode("quick-open"); setOmnibarQuery(""); setCommandPrompt(null); setIsOmnibarOpen(true); return; }
+      if (e.shiftKey && e.altKey && key === "f") { const af = liveActiveFileRef.current; if (!af || !canFormatFileRef.current || !socketRef.current?.connected) return; e.preventDefault(); flushPendingFileUpdateRef.current(); socketRef.current.emit("workspace:file:format", { roomId: roomIdRef.current, fileId: af.id }); return; }
+      if (mod && key === "s") { e.preventDefault(); if (!liveActiveFileRef.current) { showShareFeedbackRef.current("No active file"); return; } flushPendingFileUpdateRef.current(); showShareFeedbackRef.current("Saved"); return; }
+      if (mod && key === "b") { e.preventDefault(); setIsExplorerVisible((s) => !s); return; }
+      if (mod && key === "j") { e.preventDefault(); setBottomPanelView("terminal"); setIsBottomPanelVisible((s) => !(s && bottomPanelViewRef.current === "terminal")); return; }
+      if (mod && e.shiftKey && key === "t") { e.preventDefault(); reopenClosedTabRef.current(); return; }
+      if (mod && key === "w") { const af = liveActiveFileRef.current; if (!af) return; e.preventDefault(); requestCloseTabRef.current(af.id); }
     }
-
     window.addEventListener("keydown", handleKeyDown, { capture: true });
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown, { capture: true });
-    };
+    return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
   }, []);
 
+  // ── Editor handlers ──
   function handleEditorChange(nextValue: string) {
-    if (!liveActiveFile) {
-      return;
-    }
-
-    if (applyingRemoteFileIdRef.current === liveActiveFile.id) {
-      return;
-    }
-
-    if (nextValue === liveActiveFile.content) {
-      return;
-    }
-
-    setWorkspace((currentWorkspace) =>
-      updateWorkspaceFileContent(currentWorkspace, liveActiveFile.id, nextValue),
-    );
-    pendingFileUpdateRef.current = {
-      fileId: liveActiveFile.id,
-      content: nextValue,
-    };
+    if (!liveActiveFile || liveActiveFileReadOnlyState.isReadOnly) return;
+    if (applyingRemoteFileIdRef.current === liveActiveFile.id) return;
+    if (nextValue === liveActiveFile.content) return;
+    setWorkspace((ws) => updateWorkspaceFileContent(ws, liveActiveFile.id, nextValue));
+    setDirtyFileIds((ids) => [liveActiveFile.id, ...ids.filter((id) => id !== liveActiveFile.id)]);
+    setSaveState("unsaved");
+    pendingFileUpdateRef.current = { fileId: liveActiveFile.id, content: nextValue };
     scheduleFileSync();
   }
 
   function handleCursorChange(position: CursorPosition) {
-    if (!liveActiveFile) {
-      return;
-    }
+    setEditorCursorPos({ lineNumber: position.lineNumber, column: position.column });
+    if (!liveActiveFile) return;
+    if (latestCursorRef.current?.fileId === liveActiveFile.id && latestCursorRef.current.position.lineNumber === position.lineNumber && latestCursorRef.current.position.column === position.column) return;
+    latestCursorRef.current = { fileId: liveActiveFile.id, position };
+    if (!socketRef.current?.connected) return;
+    socketRef.current.emit("cursor:update", { roomId, fileId: liveActiveFile.id, position });
+  }
 
-    if (
-      latestCursorRef.current?.fileId === liveActiveFile.id &&
-      latestCursorRef.current.position.lineNumber === position.lineNumber &&
-      latestCursorRef.current.position.column === position.column
-    ) {
-      return;
-    }
+  function handleSelectionChange(selection: EditorSelection | null) { setEditorSelection(selection); }
 
-    latestCursorRef.current = {
-      fileId: liveActiveFile.id,
-      position,
-    };
+  function toAiSelectionContext(sel: EditorSelection | null): AiSelectionContext | null {
+    if (!sel || !sel.selectedText.trim()) return null;
+    return { startLineNumber: sel.startLineNumber, endLineNumber: sel.endLineNumber, selectedText: sel.selectedText };
+  }
 
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("cursor:update", {
+  function sendPrivateAiRequest({ prompt, mode, intent = "edit", fileId, selection = null }: { prompt: string; mode: AiSuggestionMode | null; intent?: "edit" | "explain" | "generate-files" | "summarize"; fileId?: string | null; selection?: EditorSelection | null }) {
+    if (!socketRef.current?.connected || (!fileId && intent !== "generate-files" && intent !== "summarize")) return;
+    const cursorLine =
+      fileId && latestCursorRef.current?.fileId === fileId
+        ? latestCursorRef.current.position.lineNumber
+        : null;
+    flushPendingFileUpdate(); setInspectorView("private-ai"); setAiRequestMode(mode); setAiErrorMessage(null);
+    socketRef.current.emit("chat:private:send", {
       roomId,
-      fileId: liveActiveFile.id,
-      position,
+      fileId: fileId ?? null,
+      content: prompt,
+      intent,
+      mode: mode ?? undefined,
+      cursorLine,
+      selection: toAiSelectionContext(selection),
     });
   }
 
   function requestPrivateAiPrompt(mode: AiSuggestionMode, prompt: string) {
-    if (!socketRef.current?.connected || isAskingAi || !liveActiveFile) {
-      return;
-    }
-
-    flushPendingFileUpdate();
-    setInspectorView("private-ai");
-    setAiRequestMode(mode);
-    setAiErrorMessage(null);
-
-    socketRef.current.emit("chat:private:send", {
-      roomId,
-      fileId: liveActiveFile.id,
-      content: prompt,
-    });
+    if (isAskingAi || !liveActiveFile) return;
+    sendPrivateAiRequest({ prompt, mode, intent: "edit", fileId: liveActiveFile.id, selection: editorSelection });
   }
 
-  function handleAskAiAssist() {
-    requestPrivateAiPrompt(
-      "assist",
-      "Suggest one practical code improvement for the active file and break it into explicit line-by-line changes that I can review before applying.",
-    );
+  function handleExplainSelectedCode() { if (!liveActiveFile) return; sendPrivateAiRequest({ prompt: editorSelection ? "Explain the selected code." : "Explain the active file.", mode: "assist", intent: "explain", fileId: liveActiveFile.id, selection: editorSelection }); }
+  function handleGenerateFunction() { requestPrivateAiPrompt("assist", editorSelection ? "Generate a function for the selected code context. Return explicit edits." : "Generate a new function fitting this file. Return explicit edits."); }
+  function handleRefactorSelection() { requestPrivateAiPrompt("assist", editorSelection ? "Refactor the selected code. Return explicit line-by-line edits." : "Refactor the active file. Return explicit line-by-line edits."); }
+  function handleFixBugs() { requestPrivateAiPrompt("assist", editorSelection ? "Fix bugs in the selected code. Return explicit line-by-line fixes." : "Fix bugs in the active file. Return explicit line-by-line fixes."); }
+  function handleAddComments() { requestPrivateAiPrompt("assist", editorSelection ? "Add explanatory comments to the selected code. Return explicit edits." : "Add explanatory comments to the active file. Return explicit edits."); }
+  function handleSummarizeProject() {
+    sendPrivateAiRequest({ prompt: "", mode: "assist", intent: "summarize", fileId: liveActiveFile?.id ?? null });
   }
+  function handleAddSessionComment(body: string, lineNumber: number) {
+    if (!liveActiveFile || !socketRef.current?.connected) return;
+    socketRef.current.emit("session:comment:add", { roomId: roomIdRef.current, fileId: liveActiveFile.id, lineNumber, body });
+  }
+  function handleGenerateFilesFromPrompt(prompt: string, fileId?: string | null) { sendPrivateAiRequest({ prompt, mode: "assist", intent: "generate-files", fileId: fileId ?? liveActiveFile?.id ?? null, selection: editorSelection }); }
+  function handleGenerateFlaskStarter() { handleGenerateFilesFromPrompt("Create a small Flask starter project with app.py, templates, static assets, and requirements.txt."); }
+  function handleGenerateCppStarter() { handleGenerateFilesFromPrompt("Create a C++ console starter with main.cpp."); }
+  function handleGenerateLandingPageStarter() { handleGenerateFilesFromPrompt("Create a static landing page: index.html, style.css, script.js."); }
 
-  function handleAskAiNextLine() {
-    requestPrivateAiPrompt(
-      "next-line",
-      "Continue the code from the current cursor position with the most likely next step. Return only explicit line-by-line changes for the active file.",
-    );
-  }
-
-  function handleAskAiOptimize() {
-    requestPrivateAiPrompt(
-      "optimize",
-      "Optimize the active file for readability, maintainability, and obvious correctness issues. Break the work into explicit line-by-line changes so I can approve them one by one.",
-    );
-  }
 
   function handleTogglePreview() {
-    if (inspectorView === "preview") {
-      setInspectorView("private-ai");
-      emitWorkspacePreviewUpdate(false, null);
-      return;
-    }
-
+    if (inspectorView === "preview") { setInspectorView("private-ai"); emitWorkspacePreviewUpdate(false, null); return; }
     openPreviewInspector();
   }
 
-  function handleThemeChange(nextThemeId: IdeThemeId) {
-    setIdeThemeId(nextThemeId);
-
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:theme:update", {
-      roomId,
-      theme: nextThemeId,
-    });
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.append(a); a.click(); a.remove();
+    window.URL.revokeObjectURL(url);
   }
 
-  function handleLanguageChange(nextLanguage: WorkspaceFileLanguage) {
-    if (!liveActiveFile || nextLanguage === liveActiveFile.language) {
-      return;
-    }
+  function handleThemeChange(next: IdeThemeId) {
+    setIdeThemeId(next);
+    if (!socketRef.current?.connected) return;
+    socketRef.current.emit("workspace:theme:update", { roomId, theme: next });
+  }
 
-    setWorkspace((currentWorkspace) =>
-      updateWorkspaceFileLanguage(currentWorkspace, liveActiveFile.id, nextLanguage),
-    );
+  function handleLanguageChange(next: WorkspaceFileLanguage) {
+    if (!liveActiveFile || liveActiveFileReadOnlyState.isReadOnly || next === liveActiveFile.language) return;
+    setWorkspace((ws) => updateWorkspaceFileLanguage(ws, liveActiveFile.id, next));
+    if (!socketRef.current?.connected) return;
+    socketRef.current.emit("workspace:file:language", { roomId, fileId: liveActiveFile.id, language: next });
+  }
 
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:file:language", {
-      roomId,
-      fileId: liveActiveFile.id,
-      language: nextLanguage,
-    });
+  function handleCreateTemplate(template: WorkspaceTemplateKind) {
+    if (!socketRef.current?.connected) return;
+    socketRef.current.emit("workspace:create:template", { roomId, template });
   }
 
   async function handleRunCode() {
-    if (!canRunCode || !liveActiveFile) {
-      return;
-    }
-
+    if (!canRunCode || !liveActiveFile) return;
     flushPendingFileUpdate();
-
-    if (liveActiveFileCanPreview) {
-      openPreviewInspector();
-      return;
-    }
-
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    setIsBottomPanelVisible(true);
-    setBottomPanelView("terminal");
-    activeRunIdRef.current = null;
-    setConsoleEntries([]);
-    setConsoleStatus("running");
-    setIsRunningCode(true);
-
-    socketRef.current.emit("code:run", {
-      roomId,
-      fileId: liveActiveFile.id,
-    });
+    if (liveActiveFileCanPreview) { openPreviewInspector(); return; }
+    if (!socketRef.current?.connected) return;
+    setIsBottomPanelVisible(true); setBottomPanelView("terminal");
+    activeRunIdRef.current = null; setConsoleEntries([]); setConsoleStatus("running"); setIsRunningCode(true);
+    socketRef.current.emit("code:run", { roomId, fileId: liveActiveFile.id });
   }
 
-  function handleSendSharedChatMessage(content: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
+  function handleSendSharedChatMessage(content: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("chat:shared:send", { roomId, content }); }
+  function handleSendPrivateAiPrompt(content: string) { if (!liveActiveFile) return; sendPrivateAiRequest({ prompt: content, mode: "assist", intent: "edit", fileId: liveActiveFile.id, selection: editorSelection }); }
 
-    socketRef.current.emit("chat:shared:send", {
-      roomId,
-      content,
-    });
+  async function handleDownloadWorkspace() {
+    try { const blob = await createWorkspaceZipBlob(workspaceRef.current); downloadBlob(blob, `itecify-${roomId.toLowerCase()}.zip`); showShareFeedback("ZIP downloaded"); }
+    catch { showShareFeedback("Export failed"); }
   }
 
-  function handleSendPrivateAiPrompt(content: string) {
-    if (!socketRef.current?.connected || !liveActiveFile) {
-      return;
-    }
-
-    flushPendingFileUpdate();
-    setInspectorView("private-ai");
-    setAiRequestMode("assist");
-    setAiErrorMessage(null);
-    socketRef.current.emit("chat:private:send", {
-      roomId,
-      fileId: liveActiveFile.id,
-      content,
-    });
+  async function handleCopyFileContent(fileId: string) {
+    const file = getWorkspaceFile(workspaceRef.current, fileId);
+    if (!file) return;
+    try { await navigator.clipboard.writeText(file.content); showShareFeedback("Copied"); }
+    catch { showShareFeedback("Copy failed"); }
   }
 
-  function updateProposalLineStatus(
-    proposalId: string,
-    changeId: string,
-    status: "approved" | "rejected",
-  ) {
-    setAiEditProposals((currentProposals) =>
-      currentProposals.map((proposal) =>
-        proposal.id !== proposalId
-          ? proposal
-          : {
-              ...proposal,
-              changes: proposal.changes.map((change) =>
-                change.id === changeId ? { ...change, status } : change,
-              ),
-            },
-      ),
-    );
+  function handleDownloadFile(fileId: string) {
+    const file = getWorkspaceFile(workspaceRef.current, fileId);
+    if (!file) return;
+    downloadBlob(new Blob([file.content], { type: "text/plain;charset=utf-8" }), file.name);
+    showShareFeedback("Downloaded");
   }
 
-  function handleApproveAiLine(proposalId: string, changeId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
 
-    updateProposalLineStatus(proposalId, changeId, "approved");
-    socketRef.current.emit("ai:proposal:approve-line", {
-      roomId,
-      proposalId,
-      changeId,
-    });
+
+  function updateProposalLineStatus(proposalId: string, changeId: string, status: "approved" | "rejected") {
+    setAiEditProposals((ps) => ps.map((p) => p.id !== proposalId ? p : { ...p, changes: p.changes.map((c) => c.id === changeId ? { ...c, status } : c) }));
   }
 
-  function handleRejectAiLine(proposalId: string, changeId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
+  function handleApproveAiLine(proposalId: string, changeId: string) { if (!socketRef.current?.connected) return; updateProposalLineStatus(proposalId, changeId, "approved"); socketRef.current.emit("ai:proposal:approve-line", { roomId, proposalId, changeId }); }
+  function handleRejectAiLine(proposalId: string, changeId: string) { if (!socketRef.current?.connected) return; updateProposalLineStatus(proposalId, changeId, "rejected"); socketRef.current.emit("ai:proposal:reject-line", { roomId, proposalId, changeId }); }
+  function handleApplyAiProposal(proposalId: string) { if (!socketRef.current?.connected) return; flushPendingFileUpdate(); socketRef.current.emit("ai:proposal:apply", { roomId, proposalId }); }
+  function handleAcceptAiBlock(blockId: string) { if (!socketRef.current?.connected) return; flushPendingFileUpdate(); socketRef.current.emit("ai:block:accept", { roomId, blockId }); }
+  function handleRejectAiBlock(blockId: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("ai:block:reject", { roomId, blockId }); }
 
-    updateProposalLineStatus(proposalId, changeId, "rejected");
-    socketRef.current.emit("ai:proposal:reject-line", {
-      roomId,
-      proposalId,
-      changeId,
-    });
-  }
+  async function handleLogout() { setIsSigningOut(true); try { await signOutUser(); } finally { setIsSigningOut(false); } }
 
-  function handleApplyAiProposal(proposalId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
+  function handlePreviewSnapshot(snapshotId: string) { setIsBottomPanelVisible(true); setBottomPanelView("timeline"); setPreviewSnapshotId(snapshotId); }
+  function handleTogglePresentation() { if (snapshots.length === 0) return; setPreviewSnapshotId((id) => id ?? snapshots[0]?.id ?? null); setIsPresentationMode((m) => !m); }
+  function handleExitPresentation() { setIsPresentationMode(false); }
+  function handlePreviousPresentationSnapshot() { if (presentationSnapshotIndex < 0 || presentationSnapshotIndex >= snapshots.length - 1) return; setPreviewSnapshotId(snapshots[presentationSnapshotIndex + 1].id); }
+  function handleNextPresentationSnapshot() { if (presentationSnapshotIndex <= 0) return; setPreviewSnapshotId(snapshots[presentationSnapshotIndex - 1].id); }
+  function handleRestoreSnapshot(snapshotId: string) { if (!socketRef.current?.connected) return; setPreviewSnapshotId(snapshotId); socketRef.current.emit("snapshot:restore", { roomId, snapshotId }); }
 
-    flushPendingFileUpdate();
-    socketRef.current.emit("ai:proposal:apply", {
-      roomId,
-      proposalId,
-    });
-  }
+  const handleTerminalInput = useCallback((data: string) => { if (!socketRef.current?.connected) return; socketRef.current.emit("terminal:input", { roomId, data }); }, [roomId]);
+  const handleTerminalCommand = useCallback((command: string) => { if (!socketRef.current?.connected) return; socketRef.current.emit("terminal:command", { roomId, command }); }, [roomId]);
+  const handleTerminalResize = useCallback((cols: number, rows: number) => { if (!socketRef.current?.connected) return; socketRef.current.emit("terminal:resize", { roomId, cols, rows }); }, [roomId]);
+  function handleClearTerminal() { if (!socketRef.current?.connected) return; socketRef.current.emit("terminal:clear", { roomId }); }
 
-  async function handleLogout() {
-    setIsSigningOut(true);
-
-    try {
-      await signOutUser();
-    } finally {
-      setIsSigningOut(false);
-    }
-  }
-
-  function handlePreviewSnapshot(snapshotId: string) {
-    setIsBottomPanelVisible(true);
-    setBottomPanelView("timeline");
-    setPreviewSnapshotId(snapshotId);
-  }
-
-  function handleTogglePresentation() {
-    if (snapshots.length === 0) {
-      return;
-    }
-
-    setPreviewSnapshotId((currentId) => currentId ?? snapshots[0]?.id ?? null);
-    setIsPresentationMode((currentMode) => !currentMode);
-  }
-
-  function handleExitPresentation() {
-    setIsPresentationMode(false);
-  }
-
-  function handlePreviousPresentationSnapshot() {
-    if (
-      presentationSnapshotIndex < 0 ||
-      presentationSnapshotIndex >= snapshots.length - 1
-    ) {
-      return;
-    }
-
-    setPreviewSnapshotId(snapshots[presentationSnapshotIndex + 1].id);
-  }
-
-  function handleNextPresentationSnapshot() {
-    if (presentationSnapshotIndex <= 0) {
-      return;
-    }
-
-    setPreviewSnapshotId(snapshots[presentationSnapshotIndex - 1].id);
-  }
-
-  function handleRestoreSnapshot(snapshotId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    setPreviewSnapshotId(snapshotId);
-    socketRef.current.emit("snapshot:restore", {
-      roomId,
-      snapshotId,
-    });
-  }
-
-  const handleTerminalInput = useCallback((data: string) => {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("terminal:input", {
-      roomId,
-      data,
-    });
-  }, [roomId]);
-
-  const handleTerminalCommand = useCallback((command: string) => {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("terminal:command", {
-      roomId,
-      command,
-    });
-  }, [roomId]);
-
-  const handleTerminalResize = useCallback((cols: number, rows: number) => {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("terminal:resize", {
-      roomId,
-      cols,
-      rows,
-    });
-  }, [roomId]);
-
-  function handleClearTerminal() {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("terminal:clear", {
-      roomId,
-    });
-  }
-
-  async function handleCopyInviteLink() {
-    try {
-      await navigator.clipboard.writeText(
-        buildSessionInviteUrl(roomId, window.location.origin),
-      );
-      showShareFeedback("Invite link copied");
-    } catch {
-      showShareFeedback("Unable to copy link");
-    }
-  }
-
-  async function handleCopySessionCode() {
-    try {
-      await navigator.clipboard.writeText(formatSessionCodeForDisplay(roomId));
-      showShareFeedback("Session code copied");
-    } catch {
-      showShareFeedback("Unable to copy code");
-    }
-  }
+  async function handleCopyInviteLink() { try { await navigator.clipboard.writeText(buildSessionInviteUrl(roomId, window.location.origin)); showShareFeedback("Link copied"); } catch { showShareFeedback("Copy failed"); } }
 
   function handleSelectFile(fileId: string) {
-    if (isPresentationMode) {
-      return;
-    }
-
+    if (isPresentationMode) return;
     flushPendingFileUpdate();
-
-    const nextView = normalizeEditorViewState(workspaceRef.current, editorView, {
-      activeFileId: fileId,
-      openFileIds: [...editorView.openFileIds, fileId],
-    });
-
-    setEditorView(nextView);
-    emitWorkspaceViewUpdate(nextView);
+    const next = normalizeEditorViewState(workspaceRef.current, editorView, { activeFileId: fileId, openFileIds: [...editorView.openFileIds, fileId] });
+    setEditorView(next); emitWorkspaceViewUpdate(next);
   }
 
-  function handleCreateFile(parentId: string | null, name: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
+  function handleCreateFile(parentId: string | null, name: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("workspace:create:file", { roomId, parentId, name }); }
+  function handleCreateFolder(parentId: string | null, name: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("workspace:create:folder", { roomId, parentId, name }); }
+  function handleRename(nodeId: string, newName: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("workspace:rename", { roomId, nodeId, newName }); }
+  function handleDelete(nodeId: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("workspace:delete", { roomId, nodeId }); }
+  function handleDuplicate(nodeId: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("workspace:duplicate", { roomId, nodeId }); }
+  function handleMove(nodeId: string, targetParentId: string | null) { if (!socketRef.current?.connected) return; socketRef.current.emit("workspace:move", { roomId, nodeId, targetParentId }); }
+  function handleFormatFile(fileId: string) { if (!socketRef.current?.connected) return; flushPendingFileUpdate(); socketRef.current.emit("workspace:file:format", { roomId, fileId }); }
+  function handleFormatActiveFile() { if (!liveActiveFile) return; handleFormatFile(liveActiveFile.id); }
 
-    socketRef.current.emit("workspace:create:file", {
-      roomId,
-      parentId,
-      name,
-    });
+  function closeTabLocally(fileId: string) {
+    const view = editorViewRef.current;
+    const idx = view.openFileIds.indexOf(fileId);
+    if (idx < 0) return null;
+    const nextOpen = view.openFileIds.filter((id) => id !== fileId);
+    const nextActive = view.activeFileId === fileId ? nextOpen[idx] ?? nextOpen[idx - 1] ?? "" : view.activeFileId;
+    const next = normalizeEditorViewState(workspaceRef.current, view, { activeFileId: nextActive, openFileIds: nextOpen });
+    editorViewRef.current = next; setEditorView(next);
+    setClosedTabHistory((ids) => [fileId, ...ids.filter((id) => id !== fileId)].slice(0, MAX_CLOSED_TAB_HISTORY));
+    return next;
   }
 
-  function handleCreateFolder(parentId: string | null, name: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:create:folder", {
-      roomId,
-      parentId,
-      name,
-    });
+  function requestCloseTab(fileId: string) {
+    const isDirty = dirtyFileIdsRef.current.includes(fileId);
+    if (isDirty) { const ok = window.confirm(socketRef.current?.connected ? "Unsaved changes. Close and save?" : "Unsaved changes (offline). Close anyway?"); if (!ok) return; }
+    if (isDirty && socketRef.current?.connected) { flushPendingFileUpdateRef.current(); }
+    else if (isDirty) { setDirtyFileIds((ids) => ids.filter((id) => id !== fileId)); setSaveState("saved"); pendingFileUpdateRef.current = null; }
+    const next = closeTabLocally(fileId);
+    if (!next || !socketRef.current?.connected) return;
+    socketRef.current.emit("workspace:tab:close", { roomId: roomIdRef.current, fileId });
   }
 
-  function handleRename(nodeId: string, newName: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:rename", {
-      roomId,
-      nodeId,
-      newName,
-    });
+  function handleReopenClosedTab() {
+    const id = closedTabHistoryRef.current.find((fid) => Boolean(getWorkspaceFile(workspaceRef.current, fid)));
+    if (!id) return;
+    flushPendingFileUpdateRef.current();
+    setClosedTabHistory((ids) => ids.filter((fid) => fid !== id));
+    const next = normalizeEditorViewState(workspaceRef.current, editorViewRef.current, { activeFileId: id, openFileIds: [...editorViewRef.current.openFileIds, id] });
+    editorViewRef.current = next; setEditorView(next); emitWorkspaceViewUpdate(next);
   }
 
-  function handleDelete(nodeId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
+  requestCloseTabRef.current = requestCloseTab;
+  reopenClosedTabRef.current = handleReopenClosedTab;
 
-    socketRef.current.emit("workspace:delete", {
-      roomId,
-      nodeId,
-    });
+  function handleExplorerAiAction(action: "generate-readme" | "add-inline-docs" | "refactor-file" | "generate-tests", nodeId: string | null) {
+    const targetNode = nodeId ? workspaceRef.current.nodes.find((n) => n.id === nodeId) ?? null : null;
+    const targetFile = targetNode?.kind === "file" ? targetNode : null;
+    if (targetFile) handleSelectFile(targetFile.id);
+    if (action === "generate-readme") { handleGenerateFilesFromPrompt(targetFile ? `Generate a README.md for ${targetFile.path}.` : "Generate a README.md for this workspace.", targetFile?.id ?? null); return; }
+    if (!targetFile) return;
+    if (action === "add-inline-docs") { sendPrivateAiRequest({ prompt: "Add concise inline documentation to this file.", mode: "assist", intent: "edit", fileId: targetFile.id }); return; }
+    if (action === "refactor-file") { sendPrivateAiRequest({ prompt: "Refactor this file for readability. Return explicit line-by-line edits.", mode: "assist", intent: "edit", fileId: targetFile.id }); return; }
+    handleGenerateFilesFromPrompt(`Generate unit tests for ${targetFile.path}.`, targetFile.id);
   }
 
-  function handleDuplicate(nodeId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
+  function handleUploadProjectZipClick() { projectZipInputRef.current?.click(); }
 
-    socketRef.current.emit("workspace:duplicate", {
-      roomId,
-      nodeId,
-    });
-  }
-
-  function handleMove(nodeId: string, targetParentId: string | null) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:move", {
-      roomId,
-      nodeId,
-      targetParentId,
-    });
-  }
-
-  function handleFormatFile(fileId: string) {
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    flushPendingFileUpdate();
-
-    socketRef.current.emit("workspace:file:format", {
-      roomId,
-      fileId,
-    });
-  }
-
-  function handleFormatActiveFile() {
-    if (!liveActiveFile) {
-      return;
-    }
-
-    handleFormatFile(liveActiveFile.id);
-  }
-
-  function handleCloseTab(fileId: string) {
-    flushPendingFileUpdate();
-
-    const closedTabIndex = editorView.openFileIds.indexOf(fileId);
-
-    if (closedTabIndex < 0) {
-      return;
-    }
-
-    const nextOpenFileIds = editorView.openFileIds.filter(
-      (openFileId) => openFileId !== fileId,
-    );
-    const nextActiveFileId =
-      editorView.activeFileId === fileId
-        ? nextOpenFileIds[closedTabIndex] ??
-          nextOpenFileIds[closedTabIndex - 1] ??
-          ""
-        : editorView.activeFileId;
-    const nextView = normalizeEditorViewState(workspaceRef.current, editorView, {
-      activeFileId: nextActiveFileId,
-      openFileIds: nextOpenFileIds,
-    });
-
-    setEditorView(nextView);
-
-    if (!socketRef.current?.connected) {
-      return;
-    }
-
-    socketRef.current.emit("workspace:tab:close", {
-      roomId,
-      fileId,
-    });
-  }
-
-  function handleCreateRootFile() {
-    handleCreateFile(null, "untitled.js");
-  }
-
-  function handleCreateRootFolder() {
-    handleCreateFolder(null, "new-folder");
-  }
-
-  function handleUploadProjectZipClick() {
-    projectZipInputRef.current?.click();
-  }
-
-  async function handleProjectZipSelected(
-    event: React.ChangeEvent<HTMLInputElement>,
-  ) {
-    const selectedFile = event.target.files?.[0] ?? null;
-
-    if (!selectedFile) {
-      return;
-    }
-
-    setProjectImportState({
-      isImporting: true,
-      progress: 0,
-      message: `Uploading ${selectedFile.name} into session ${roomId}.`,
-    });
-
+  async function handleProjectZipSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    if (!file) return;
+    setProjectImportState({ isImporting: true, progress: 0, message: `Uploading ${file.name}…` });
     try {
-      const result = await uploadSessionProjectZip(
-        roomId,
-        selectedFile,
-        (progress) => {
-          setProjectImportState((currentState) => ({
-            ...currentState,
-            isImporting: true,
-            progress,
-          }));
-        },
-      );
-
-      setProjectImportState({
-        isImporting: false,
-        progress: null,
-        message: `Imported ${result.importedFileCount} files and ${result.importedFolderCount} folders.${result.skippedCount > 0 ? ` Skipped ${result.skippedCount} unsupported entries.` : ""}`,
-      });
-    } catch (error) {
-      setProjectImportState({
-        isImporting: false,
-        progress: null,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Unable to import that project ZIP right now.",
-      });
-    } finally {
-      event.target.value = "";
-    }
+      const result = await uploadSessionProjectZip(roomId, file, (progress) => { setProjectImportState((s) => ({ ...s, isImporting: true, progress })); });
+      setProjectImportState({ isImporting: false, progress: null, message: `Imported ${result.importedFileCount} files, ${result.importedFolderCount} folders.${result.skippedCount > 0 ? ` Skipped ${result.skippedCount}.` : ""}` });
+    } catch (err) {
+      setProjectImportState({ isImporting: false, progress: null, message: err instanceof Error ? err.message : "Import failed." });
+    } finally { e.target.value = ""; }
   }
 
-  const connectionLabel =
-    connectionStatus === "connected"
-      ? "Connected"
-      : connectionStatus === "connecting"
-        ? "Connecting"
-        : "Disconnected";
+  useEffect(() => {
+    if (isExplorerVisible) setActivityKey("explorer");
+  }, [isExplorerVisible]);
+
+  function handleItecifyActivity(key: ActivityKey) {
+    setActivityKey(key);
+    if (key === "explorer") {
+      setIsExplorerVisible(true);
+      return;
+    }
+    if (key === "search") {
+      openOmnibar("search");
+      return;
+    }
+    if (key === "git") {
+      openOmnibar("command");
+      setOmnibarQuery("");
+      return;
+    }
+    openOmnibar("command");
+    setOmnibarQuery("theme");
+  }
+
+  function handleSelectRightTab(
+    tab: "ai" | "shared-chat" | "preview" | "console-output" | "activity" | "comments",
+  ) {
+    if (tab === "shared-chat") setInspectorView("shared-chat");
+    else if (tab === "preview") setInspectorView("preview");
+    else if (tab === "console-output") setInspectorView("console-output");
+    else if (tab === "activity") setInspectorView("activity");
+    else if (tab === "comments") setInspectorView("comments");
+    else setInspectorView("private-ai");
+  }
+
+  const rightTabActiveId =
+    inspectorView === "shared-chat"
+      ? "shared-chat"
+      : inspectorView === "preview"
+        ? "preview"
+        : inspectorView === "console-output"
+          ? "console-output"
+          : inspectorView === "activity"
+            ? "activity"
+            : inspectorView === "comments"
+              ? "comments"
+              : "ai";
+
+  const isTerminalLayoutActive = isBottomPanelVisible && bottomPanelView === "terminal";
 
   return (
-    <main
-      className="ide-theme-root flex h-full min-h-0 w-full overflow-hidden text-[var(--text-primary)]"
+    <div
+      className="ide-theme-root flex h-full w-full flex-col overflow-hidden bg-[var(--bg)] text-[var(--text-primary)]"
       data-ide-theme={ideThemeId}
+      style={{
+        fontFamily:
+          ideThemeId === "itecify"
+            ? "var(--font-jetbrains-mono), ui-monospace, monospace"
+            : "'Segoe UI', var(--font-space-grotesk), system-ui, sans-serif",
+      }}
     >
-      <input
-        ref={projectZipInputRef}
-        type="file"
-        accept=".zip,application/zip"
-        className="hidden"
-        onChange={handleProjectZipSelected}
-      />
-      <div className="mx-auto flex h-full min-h-0 w-full max-w-none flex-col overflow-hidden bg-[var(--bg-elevated)]">
-        <TopBar
-          currentUserName={currentUserName}
-          connectionStatus={connectionStatus}
-          consoleStatus={consoleStatus}
-          participantCount={participants.length}
-          roomId={roomId}
-          isSigningOut={isSigningOut}
-          themeId={ideThemeId}
-          shareFeedback={shareFeedback}
-          onThemeChange={handleThemeChange}
-          isExplorerVisible={isExplorerVisible}
-          isBottomPanelVisible={isBottomPanelVisible}
-          onToggleExplorer={handleToggleExplorer}
-          onToggleTerminal={() => handleToggleBottomPanel("terminal")}
-          onOpenQuickOpen={() => openOmnibar("quick-open")}
-          onOpenSearch={() => openOmnibar("search")}
-          onOpenCommandPalette={() => openOmnibar("command")}
-          onCopyInviteLink={handleCopyInviteLink}
-          onCopySessionCode={handleCopySessionCode}
-          onLogout={handleLogout}
-        />
-        <ParticipantsBar
-          participants={participants}
-          currentUserName={currentUserName}
-          currentUserSocketId={currentSocketId}
-        />
+      <input ref={projectZipInputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={handleProjectZipSelected} />
 
-        <div
-          className="grid min-h-0 flex-1 overflow-hidden"
-          style={{
-            gridTemplateColumns: isExplorerVisible
-              ? "minmax(220px,18vw) minmax(0,1fr)"
-              : "0px minmax(0,1fr)",
-            gridTemplateRows: isBottomPanelVisible
-              ? "minmax(0,1fr) minmax(220px,32vh)"
-              : "minmax(0,1fr) 0px",
-          }}
-        >
+      <ItecifyTopBar
+        roomId={roomId}
+        connectionStatus={connectionStatus}
+        consoleStatus={consoleStatus}
+        isRunningCode={isRunningCode}
+        participants={participants}
+        currentUserName={currentUserName}
+        shareFeedback={shareFeedback}
+        onCopyInviteLink={handleCopyInviteLink}
+        onSignOut={handleLogout}
+        isSigningOut={isSigningOut}
+      />
+
+      <ItecifyCmdBar
+        isExplorerVisible={isExplorerVisible}
+        isTerminalLayoutActive={isTerminalLayoutActive}
+        activeLanguage={liveActiveFile?.language ?? "plaintext"}
+        languageDisabled={!liveActiveFile || isPresentationMode || liveActiveFileReadOnlyState.isReadOnly}
+        onToggleExplorer={() => {
+          handleToggleExplorer();
+          setActivityKey("explorer");
+        }}
+        onToggleTerminal={() => handleToggleBottomPanel("terminal")}
+        onQuickOpen={() => openOmnibar("quick-open")}
+        onPalette={() => openOmnibar("command")}
+        onLanguageChange={handleLanguageChange}
+        onFormat={() => {
+          if (canFormatFile) handleFormatActiveFile();
+        }}
+        onPreview={handleTogglePreview}
+        onFocusAi={() => handleSelectRightTab("ai")}
+      />
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <ItecifyActivityBar active={activityKey} onSelect={handleItecifyActivity} />
+
           <div
-            className={`min-h-0 overflow-hidden border-r border-[var(--line)] transition ${
-              isExplorerVisible ? "opacity-100" : "pointer-events-none opacity-0"
-            }`}
+            className="flex min-h-0 flex-shrink-0 flex-col overflow-hidden border-r border-[rgba(255,255,255,0.055)] transition-[width] duration-150"
+            style={{ width: isExplorerVisible ? 220 : 0 }}
           >
-            <IdeFileExplorer
-              roomId={roomId}
-              workspace={workspace}
-              activeFileId={editorView.activeFileId}
-              isImportingProject={projectImportState.isImporting}
-              isEmptyWorkspacePromptDismissed={isEmptyWorkspacePromptDismissed}
-              importStatusMessage={projectImportState.message}
-              onSelect={handleSelectFile}
-              onDismissEmptyWorkspacePrompt={() =>
-                setIsEmptyWorkspacePromptDismissed(true)
-              }
-              onUploadProjectZip={handleUploadProjectZipClick}
-              onCreateFile={handleCreateFile}
-              onCreateFolder={handleCreateFolder}
-              onRename={handleRename}
-              onDelete={handleDelete}
-              onDuplicate={handleDuplicate}
-              onMove={handleMove}
-              onFormatFile={handleFormatFile}
-            />
+            {isExplorerVisible ? (
+              <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0f1118]">
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <IdeFileExplorer
+                    roomId={roomId}
+                    workspace={workspace}
+                    activeFileId={editorView.activeFileId}
+                    isImportingProject={projectImportState.isImporting}
+                    isEmptyWorkspacePromptDismissed={isEmptyWorkspacePromptDismissed}
+                    importStatusMessage={projectImportState.message}
+                    onSelect={handleSelectFile}
+                    onDismissEmptyWorkspacePrompt={() => setIsEmptyWorkspacePromptDismissed(true)}
+                    onUploadProjectZip={handleUploadProjectZipClick}
+                    onCreateFile={handleCreateFile}
+                    onCreateFolder={handleCreateFolder}
+                    onRename={handleRename}
+                    onDelete={handleDelete}
+                    onDuplicate={handleDuplicate}
+                    onMove={handleMove}
+                    onFormatFile={handleFormatFile}
+                    onCreateTemplate={handleCreateTemplate}
+                    showHiddenFiles={showHiddenFiles}
+                    onToggleHiddenFiles={() => setShowHiddenFiles((s) => !s)}
+                    onCopyFileContent={handleCopyFileContent}
+                    onDownloadFile={handleDownloadFile}
+                    onAiFileAction={handleExplorerAiAction}
+                  />
+                </div>
+                <div className="flex-shrink-0 border-t border-[rgba(255,255,255,0.055)] px-3 py-2">
+                  <p className="text-[9.5px] font-medium uppercase tracking-[0.12em] text-[#626880]">Selection</p>
+                  <p className="mt-1 truncate font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#a8abbe]">
+                    {liveActiveFile ? liveActiveFile.path : "Workspace root"}
+                  </p>
+                </div>
+                <ItecifySidebarPresence
+                  participants={participants}
+                  currentUserName={currentUserName}
+                  currentUserSocketId={currentSocketId}
+                  workspaceFiles={workspaceFiles.map((f) => ({ id: f.id, name: f.name }))}
+                  remoteCursors={remoteCursors}
+                />
+              </div>
+            ) : null}
           </div>
 
-          <div className="grid min-h-0 overflow-hidden grid-cols-[minmax(0,1fr)_minmax(300px,30vw)]">
-            <EditorPanel
-              roomId={roomId}
-              activeFile={displayedActiveFile}
-              hasFiles={workspaceFiles.length > 0}
-              isEmptyWorkspacePromptDismissed={isEmptyWorkspacePromptDismissed}
-              connectionStatus={connectionStatus}
-              ideThemeId={ideThemeId}
-              openFiles={displayedOpenFiles}
-              canRunCode={canRunCode}
-              canFormatFile={canFormatFile}
-              aiRequestMode={aiRequestMode}
-              projectImportState={projectImportState}
-              isRunningCode={isRunningCode}
-              isPreviewFocused={inspectorView === "preview"}
-              presentationSnapshot={presentationSnapshot}
-              isPresentationMode={isPresentationMode}
-              editorRevealRequest={editorRevealRequest}
-              onSelectTab={handleSelectFile}
-              onCloseTab={handleCloseTab}
-              onChange={handleEditorChange}
-              onCursorChange={handleCursorChange}
-              onAskAiAssist={handleAskAiAssist}
-              onAskAiNextLine={handleAskAiNextLine}
-              onAskAiOptimize={handleAskAiOptimize}
-              onFormatFile={handleFormatActiveFile}
-              onLanguageChange={handleLanguageChange}
-              onCreateFile={handleCreateRootFile}
-              onCreateFolder={handleCreateRootFolder}
-              onDismissEmptyWorkspacePrompt={() =>
-                setIsEmptyWorkspacePromptDismissed(true)
-              }
-              onTogglePreview={handleTogglePreview}
-              onUploadProjectZip={handleUploadProjectZipClick}
-              onRunCode={handleRunCode}
-              remoteCursors={visibleRemoteCursors}
-              onExitPresentation={handleExitPresentation}
-              onPreviousSnapshot={handlePreviousPresentationSnapshot}
-              onNextSnapshot={handleNextPresentationSnapshot}
-              hasPreviousSnapshot={presentationSnapshotIndex < snapshots.length - 1}
-              hasNextSnapshot={presentationSnapshotIndex > 0}
-            />
+          <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden bg-[#0b0d12]">
+                <div className="flex-shrink-0 overflow-x-auto overflow-y-hidden border-b border-[rgba(255,255,255,0.055)] bg-[#0f1118]">
+                  <IdeEditorTabs
+                    tabs={displayedOpenFiles.map((file) => ({
+                      id: file.id,
+                      name: file.name,
+                      path: file.path,
+                      icon: getFileIcon(file),
+                      extension: file.name.includes(".") ? `.${file.name.split(".").pop() ?? ""}` : undefined,
+                      editable: true,
+                      isDirty: dirtyFileIds.includes(file.id),
+                      isReadOnly: getWorkspaceFileReadOnlyState(file).isReadOnly,
+                    }))}
+                    activeTabId={displayedActiveFile?.id ?? ""}
+                    onSelect={handleSelectFile}
+                    onClose={(id) => requestCloseTab(id)}
+                    disabled={isPresentationMode}
+                  />
+                </div>
 
-            <div className="min-h-0 overflow-hidden border-l border-[var(--line)]">
+                <ItecifyBreadcrumb
+                  activeFile={displayedActiveFile}
+                  saveState={saveState}
+                  isReadOnly={liveActiveFileReadOnlyState.isReadOnly}
+                />
+
+                <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0d12]">
+                {isPresentationMode && presentationSnapshot && (
+                  <PresentationOverlay
+                    snapshot={presentationSnapshot}
+                    hasPrevious={presentationSnapshotIndex < snapshots.length - 1}
+                    hasNext={presentationSnapshotIndex > 0}
+                    onPrevious={handlePreviousPresentationSnapshot}
+                    onNext={handleNextPresentationSnapshot}
+                    onExit={handleExitPresentation}
+                  />
+                )}
+
+                {displayedActiveFile ? (
+                  <CollaborativeEditor
+                    ideTheme={ideThemeId}
+                    readOnly={isPresentationMode || liveActiveFileReadOnlyState.isReadOnly}
+                    language={toMonacoLanguage(displayedActiveFile.language)}
+                    value={displayedActiveFile.content}
+                    revealRequest={editorRevealRequest?.fileId === displayedActiveFile.id ? { lineNumber: editorRevealRequest.lineNumber, nonce: editorRevealRequest.nonce } : null}
+                    onChange={handleEditorChange}
+                    onCursorChange={handleCursorChange}
+                    onSelectionChange={handleSelectionChange}
+                    remoteCursors={isPresentationMode ? [] : visibleRemoteCursors}
+                  />
+                ) : (
+                  /* Welcome / empty state — VS Code style */
+                  <div className="flex h-full items-center justify-center bg-[#1e1e1e]">
+                    <div className="text-center max-w-sm px-6">
+                      <p className="text-[13px] text-[#858585] mb-6">
+                        {workspaceFiles.length > 0 ? "Open a file from the Explorer to start editing." : "No files in this workspace yet."}
+                      </p>
+                      <div className="flex flex-col gap-2 items-center">
+                        {workspaceFiles.length === 0 && (
+                          <button type="button" onClick={handleUploadProjectZipClick} disabled={projectImportState.isImporting} className="w-full px-4 py-2 bg-[#0e639c] hover:bg-[#1177bb] text-white text-[12px] transition-colors disabled:opacity-50 rounded">
+                            {projectImportState.isImporting ? `Uploading… ${projectImportState.progress ?? 0}%` : "Upload Project ZIP"}
+                          </button>
+                        )}
+                        <button type="button" onClick={() => handleCreateFile(null, "untitled.js")} className="w-full px-4 py-2 border border-[#3C3C3C] text-[#CCCCCC] hover:bg-[#2A2D2E] text-[12px] transition-colors">New File</button>
+                        {closedTabHistory.length > 0 && (
+                          <button type="button" onClick={handleReopenClosedTab} className="w-full px-4 py-2 border border-[#3c3c3c] text-[#cccccc] hover:bg-[#2a2d2e] text-[12px] transition-colors rounded">Reopen Closed Tab</button>
+                        )}
+                      </div>
+                      {projectImportState.message && (
+                        <p className="mt-4 text-[11px] text-[#858585]">{projectImportState.message}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <IdeStatusBar
+                line={editorCursorPos.lineNumber}
+                column={editorCursorPos.column}
+                languageLabel={liveActiveFile ? getWorkspaceLanguageLabel(liveActiveFile.language) : "Plain Text"}
+                connectionStatus={connectionStatus}
+                saveState={saveState}
+                isRunningCode={isRunningCode}
+                lastRunExitCode={lastRunInfo?.exitCode ?? null}
+                lastRunFailed={lastRunInfo?.failed ?? false}
+              />
+            </div>
+
+            <div className="w-[min(280px,32vw)] flex-shrink-0 overflow-hidden border-l border-[rgba(255,255,255,0.055)] bg-[#0f1118] min-h-0">
               <IdeSidePanel
-                title="Inspector"
-                subtitle="Preview, room chat, and private AI editing stay docked to the right like a real IDE side view."
+                title=""
+                subtitle=""
+                hideChromeLabels
                 tabs={[
+                  { id: "ai", label: "AI" },
+                  { id: "shared-chat", label: "Chat" },
                   { id: "preview", label: "Preview" },
-                  { id: "shared-chat", label: "Session Chat" },
-                  { id: "private-ai", label: "Private AI" },
+                  { id: "console-output", label: "Output" },
+                  { id: "activity", label: "Activity" },
+                  { id: "comments", label: "Comments" },
                 ]}
-                activeTabId={inspectorView}
-                onSelectTab={(view) => setInspectorView(view as InspectorView)}
+                activeTabId={rightTabActiveId}
+                onSelectTab={(id) =>
+                  handleSelectRightTab(
+                    id === "shared-chat"
+                      ? "shared-chat"
+                      : id === "preview"
+                        ? "preview"
+                        : id === "console-output"
+                          ? "console-output"
+                          : id === "activity"
+                            ? "activity"
+                            : id === "comments"
+                              ? "comments"
+                              : "ai",
+                  )
+                }
               >
                 <div className="h-full min-h-0 overflow-hidden">
-                  {inspectorView === "preview" ? (
+                  {rightTabActiveId === "preview" && (
                     <IdePreviewPanel
-                      activeFile={
-                        inspectorActiveFile ??
-                        displayedOpenFiles[0] ??
-                        workspaceFiles[0] ??
-                        null
-                      }
+                      activeFile={inspectorActiveFile ?? displayedOpenFiles[0] ?? workspaceFiles[0] ?? null}
                       workspace={workspace}
-                      connectionLabel={connectionLabel}
+                      connectionLabel={connectionStatus === "connected" ? "Connected" : connectionStatus === "connecting" ? "Connecting" : "Disconnected"}
                       participantCount={participants.length}
                       snapshotCount={snapshots.length}
                       terminalEntryCount={terminalEntries.length}
                       isRunningCode={isRunningCode}
                     />
-                  ) : null}
-
-                  {inspectorView === "shared-chat" ? (
+                  )}
+                  {rightTabActiveId === "shared-chat" && (
                     <SharedChatPanel
                       messages={sharedChatMessages}
                       canSend={connectionStatus === "connected"}
                       currentUserId={currentUserId}
                       onSend={handleSendSharedChatMessage}
                     />
-                  ) : null}
-
-                  {inspectorView === "private-ai" ? (
-                    <PrivateAiChatPanel
-                      activeFile={liveActiveFile}
-                      messages={privateChatMessages}
-                      proposals={aiEditProposals}
-                      isLoading={isAskingAi}
-                      errorMessage={aiErrorMessage}
+                  )}
+                  {rightTabActiveId === "console-output" && (
+                    <ConsolePanel entries={consoleEntries} status={consoleStatus} />
+                  )}
+                  {rightTabActiveId === "activity" && (
+                    <SessionActivityPanel entries={activityFeed} />
+                  )}
+                  {rightTabActiveId === "comments" && (
+                    <SessionCommentsPanel
+                      comments={sessionComments}
+                      activeFileId={liveActiveFile?.id ?? null}
+                      activeFilePath={liveActiveFile?.path ?? null}
                       canSend={connectionStatus === "connected"}
-                      currentUserId={currentUserId}
-                      onSendPrompt={handleSendPrivateAiPrompt}
-                      onApproveLine={handleApproveAiLine}
-                      onRejectLine={handleRejectAiLine}
-                      onApplyProposal={handleApplyAiProposal}
+                      onAddComment={handleAddSessionComment}
                     />
-                  ) : null}
+                  )}
+                  {rightTabActiveId === "ai" && (
+                    <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-2">
+                      <AiSuggestionsPanel
+                        blocks={aiBlocks}
+                        isLoading={isAiBlockLoading}
+                        errorMessage={aiBlockErrorMessage}
+                        onAccept={handleAcceptAiBlock}
+                        onReject={handleRejectAiBlock}
+                      />
+                      <PrivateAiChatPanel
+                        activeFile={liveActiveFile}
+                        messages={privateChatMessages}
+                        proposals={aiEditProposals}
+                        isLoading={isAskingAi}
+                        errorMessage={aiErrorMessage}
+                        canSend={connectionStatus === "connected"}
+                        currentUserId={currentUserId}
+                        selectionSummary={selectionSummary}
+                        hasSelection={Boolean(editorSelection?.selectedText.trim())}
+                        onSendPrompt={handleSendPrivateAiPrompt}
+                        onExplainSelection={handleExplainSelectedCode}
+                        onGenerateFunction={handleGenerateFunction}
+                        onRefactorSelection={handleRefactorSelection}
+                        onFixBugs={handleFixBugs}
+                      onAddComments={handleAddComments}
+                      onSummarizeProject={handleSummarizeProject}
+                      onGenerateFilesFromPrompt={handleGenerateFilesFromPrompt}
+                        onGenerateFlaskStarter={handleGenerateFlaskStarter}
+                        onGenerateCppStarter={handleGenerateCppStarter}
+                        onGenerateLandingPageStarter={handleGenerateLandingPageStarter}
+                        onApproveLine={handleApproveAiLine}
+                        onRejectLine={handleRejectAiLine}
+                        onApplyProposal={handleApplyAiProposal}
+                      />
+                    </div>
+                  )}
                 </div>
               </IdeSidePanel>
             </div>
           </div>
 
           <div
-            className={`min-h-0 overflow-hidden border-t border-[var(--line)] lg:col-[1/3] ${
-              isBottomPanelVisible ? "opacity-100" : "pointer-events-none opacity-0"
-            }`}
+            className="flex-shrink-0 overflow-hidden border-t border-[rgba(255,255,255,0.055)] transition-all duration-150"
+            style={{ height: isBottomPanelVisible ? "clamp(140px, 28vh, 300px)" : 0 }}
           >
-            <IdeBottomPanel
-              activeTab={bottomPanelView}
-              onSelectTab={handleSelectBottomPanelView}
-              roomId={roomId}
-              terminalEntries={terminalEntries}
-              canInteractTerminal={connectionStatus === "connected"}
-              onInputTerminal={handleTerminalInput}
-              onResizeTerminal={handleTerminalResize}
-              onClearTerminal={handleClearTerminal}
-              onTerminalCommand={handleTerminalCommand}
-              onRunActiveFileFromTerminal={handleRunCode}
-              canRunActiveFileFromTerminal={canRunCode}
-              activeFileLabel={liveActiveFile?.name ?? null}
-              consoleEntries={consoleEntries}
-              consoleStatus={consoleStatus}
-              snapshots={snapshots}
-              previewSnapshotId={previewSnapshotId}
-              liveWorkspace={workspace}
-              canRestoreSnapshot={connectionStatus === "connected"}
-              isPresentationMode={isPresentationMode}
-              onPreviewSnapshot={handlePreviewSnapshot}
-              onRestoreSnapshot={handleRestoreSnapshot}
-              onTogglePresentation={handleTogglePresentation}
-            />
+            {isBottomPanelVisible && (
+              <IdeBottomPanel
+                activeTab={bottomPanelView}
+                onSelectTab={handleSelectBottomPanelView}
+                roomId={roomId}
+                terminalEntries={terminalEntries}
+                canInteractTerminal={connectionStatus === "connected"}
+                onInputTerminal={handleTerminalInput}
+                onResizeTerminal={handleTerminalResize}
+                onClearTerminal={handleClearTerminal}
+                onTerminalCommand={handleTerminalCommand}
+                onRunActiveFileFromTerminal={handleRunCode}
+                canRunActiveFileFromTerminal={canRunCode}
+                activeFileLabel={liveActiveFile?.name ?? null}
+                consoleEntries={consoleEntries}
+                consoleStatus={consoleStatus}
+                snapshots={snapshots}
+                previewSnapshotId={previewSnapshotId}
+                liveWorkspace={workspace}
+                canRestoreSnapshot={connectionStatus === "connected"}
+                isPresentationMode={isPresentationMode}
+                onPreviewSnapshot={handlePreviewSnapshot}
+                onRestoreSnapshot={handleRestoreSnapshot}
+                onTogglePresentation={handleTogglePresentation}
+                onHelp={() => openOmnibar("command")}
+                onRunActive={handleRunCode}
+                onLivePty={() => {
+                  setBottomPanelView("terminal");
+                  setIsBottomPanelVisible(true);
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
+      </div>
 
+      {shortcutsOpen ? (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/55 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard shortcuts"
+          onClick={() => setShortcutsOpen(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-[rgba(255,255,255,0.12)] bg-[#1a1d26] p-5 text-[#e8eaf2] shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="font-[family-name:var(--font-syne)] text-lg font-semibold text-[#4ecdc4]">
+              Keyboard shortcuts
+            </h2>
+            <ul className="mt-4 space-y-2 font-[family-name:var(--font-jetbrains-mono)] text-[11px] leading-6 text-[#a8abbe]">
+              <li><span className="text-[#626880]">⌘/Ctrl+⇧P</span> — Command palette</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+P</span> — Quick open</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+⇧F</span> — Search in files</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+B</span> — Toggle explorer</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+J</span> — Toggle terminal</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+S</span> — Save (sync)</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+⇧T</span> — Reopen closed tab</li>
+              <li><span className="text-[#626880]">⌘/Ctrl+W</span> — Close tab</li>
+              <li><span className="text-[#626880]">⇧⌥F</span> — Format document</li>
+            </ul>
+            <button
+              type="button"
+              className="mt-5 w-full rounded border border-[rgba(78,205,196,0.35)] py-2 text-[12px] text-[#4ecdc4] transition hover:bg-[rgba(78,205,196,0.08)]"
+              onClick={() => setShortcutsOpen(false)}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Command palette / omnibar */}
       <WorkspaceOmnibar
         isOpen={isOmnibarOpen}
         mode={omnibarMode}
@@ -2769,20 +1385,14 @@ export function WorkspaceShell({
         commandItems={commandItems}
         commandPrompt={commandPrompt}
         onClose={closeOmnibar}
-        onModeChange={(nextMode) => {
-          setOmnibarMode(nextMode);
-          setCommandPrompt(null);
-          setOmnibarQuery("");
-        }}
+        onModeChange={(m) => { setOmnibarMode(m); setCommandPrompt(null); setOmnibarQuery(""); }}
         onQueryChange={setOmnibarQuery}
-        onSelectQuickOpen={(fileId) => handleOpenFileFromOmnibar(fileId)}
-        onSelectSearch={(fileId, lineNumber) =>
-          handleOpenFileFromOmnibar(fileId, lineNumber)
-        }
+        onSelectQuickOpen={(id) => handleOpenFileFromOmnibar(id)}
+        onSelectSearch={(id, ln) => handleOpenFileFromOmnibar(id, ln)}
         onSelectCommand={handleSelectCommand}
         onSubmitCommandPrompt={handleSubmitCommandPrompt}
         onCancelCommandPrompt={() => setCommandPrompt(null)}
       />
-    </main>
+    </div>
   );
 }
