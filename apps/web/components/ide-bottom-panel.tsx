@@ -78,13 +78,13 @@ export function IdeBottomPanel({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--panel-bg)]">
-      <div className="flex h-[30px] flex-shrink-0 items-center border-b border-[var(--line)] px-2">
+      <div className="flex h-7.5 shrink-0 items-center border-b border-[var(--line)] px-2">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
             onClick={() => onSelectTab(tab.id)}
-            className={`flex h-[30px] items-center gap-1 border-b-2 px-3 text-[11px] font-medium transition ${tabButtonClasses(
+            className={`flex h-7.5 items-center gap-1 border-b-2 px-3 text-[11px] font-medium transition ${tabButtonClasses(
               activeTab === tab.id,
             )}`}
           >
@@ -101,7 +101,7 @@ export function IdeBottomPanel({
             <button
               type="button"
               onClick={onHelp}
-              className="h-[22px] rounded border border-[rgba(255,255,255,0.09)] bg-[#181c27] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#626880] hover:bg-[#1e2230] hover:text-[#a8abbe]"
+              className="h-5.5 rounded border border-[rgba(255,255,255,0.09)] bg-[#181c27] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#626880] hover:bg-[#1e2230] hover:text-[#a8abbe]"
               title="Command palette (⌘⇧P)"
             >
               Help
@@ -112,7 +112,7 @@ export function IdeBottomPanel({
               type="button"
               onClick={onRunActive}
               disabled={!canRunActiveFileFromTerminal}
-              className="h-[22px] rounded border border-[rgba(78,205,196,0.22)] bg-[rgba(78,205,196,0.04)] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#4ecdc4] hover:bg-[rgba(78,205,196,0.12)] disabled:opacity-40"
+              className="h-5.5 rounded border border-[rgba(78,205,196,0.22)] bg-[rgba(78,205,196,0.04)] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#4ecdc4] hover:bg-[rgba(78,205,196,0.12)] disabled:opacity-40"
               title="Run the active file"
             >
               Run active
@@ -122,7 +122,7 @@ export function IdeBottomPanel({
             <button
               type="button"
               onClick={onLivePty}
-              className="h-[22px] rounded border border-[rgba(232,162,58,0.25)] bg-[rgba(232,162,58,0.06)] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#e8a23a] hover:bg-[rgba(232,162,58,0.12)]"
+              className="h-5.5 rounded border border-[rgba(232,162,58,0.25)] bg-[rgba(232,162,58,0.06)] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#e8a23a] hover:bg-[rgba(232,162,58,0.12)]"
               title="Show the shared terminal"
             >
               Live PTY
@@ -131,7 +131,7 @@ export function IdeBottomPanel({
           <button
             type="button"
             onClick={onClearTerminal}
-            className="h-[22px] rounded border border-[rgba(255,255,255,0.09)] bg-[#181c27] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#626880] hover:bg-[#1e2230]"
+            className="h-5.5 rounded border border-[rgba(255,255,255,0.09)] bg-[#181c27] px-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#626880] hover:bg-[#1e2230]"
             title="Clear terminal buffer"
           >
             Clear

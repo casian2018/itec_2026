@@ -36,7 +36,7 @@ function EntryStatus({
   return (
     <ExperienceShell>
       <div className="flex min-h-full items-center justify-center">
-        <ExperiencePanel className="w-full max-w-[720px] p-8">
+        <ExperiencePanel className="w-full max-w-180 p-8">
           <div className="flex flex-wrap items-center gap-3">
             <ExperiencePill>IDE Session</ExperiencePill>
             <ExperiencePill tone="accent">Workspace Handoff</ExperiencePill>
@@ -48,14 +48,14 @@ function EntryStatus({
           <p className="mt-4 text-sm leading-7 text-muted-foreground">{detail}</p>
 
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-[24px] border border-border/30 bg-white/[0.04] px-4 py-4">
+            <div className="rounded-3xl border border-border/30 bg-white/4 px-4 py-4">
               <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
                 Display Name
               </p>
               <p className="mt-2 text-sm font-semibold text-white">{displayName}</p>
             </div>
 
-            <div className="rounded-[24px] border border-border/30 bg-white/[0.04] px-4 py-4">
+            <div className="rounded-3xl border border-border/30 bg-white/4 px-4 py-4">
               <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
                 Session
               </p>
@@ -63,7 +63,7 @@ function EntryStatus({
             </div>
           </div>
 
-          <div className="mt-6 rounded-[24px] border border-primary/18 bg-primary/10 px-4 py-4">
+          <div className="mt-6 rounded-3xl border border-primary/18 bg-primary/10 px-4 py-4">
             <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
               Workspace Handoff
             </p>
@@ -262,7 +262,7 @@ export default function DevSessionPage() {
 
   if (status === "loading") {
     return (
-      <div className="h-[100dvh] overflow-hidden">
+      <div className="h-dvh overflow-hidden">
         <EntryStatus
           title="Restoring your session"
           detail="Checking your lightweight session before opening the browser IDE."

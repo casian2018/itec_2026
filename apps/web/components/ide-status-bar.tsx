@@ -15,6 +15,7 @@ type IdeStatusBarProps = {
   isRunningCode: boolean;
   lastRunExitCode: number | null;
   lastRunFailed: boolean;
+  onDownloadWorkspace?: () => void;
 };
 
 export function IdeStatusBar({
@@ -26,6 +27,7 @@ export function IdeStatusBar({
   isRunningCode,
   lastRunExitCode,
   lastRunFailed,
+  onDownloadWorkspace,
 }: IdeStatusBarProps) {
   const conn =
     connectionStatus === "connected"
@@ -50,7 +52,7 @@ export function IdeStatusBar({
 
   return (
     <div
-      className="flex h-[22px] flex-shrink-0 select-none items-center gap-4 border-t border-[rgba(255,255,255,0.055)] bg-[var(--statusbar-bg,#0f1118)] px-3 font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[var(--statusbar-text,#a8abbe)]"
+      className="flex h-5.5 shrink-0 select-none items-center gap-4 border-t border-[rgba(255,255,255,0.055)] bg-(--statusbar-bg,#0f1118) px-3 font-(family-name:--font-jetbrains-mono) text-[10px] text-(--statusbar-text,#a8abbe)"
       role="status"
     >
       <span>
@@ -64,12 +66,23 @@ export function IdeStatusBar({
       <span className={conn.className}>{conn.label}</span>
       <span className="text-[#626880]">|</span>
       <span className={saveState === "unsaved" ? "text-[#e8a23a]" : ""}>{save}</span>
-      <span className="text-[#626880]">|</span>
-      <FocusTimer />
       <span className="ml-auto text-[#626880]">{runLabel}</span>
       <span className="text-[#3d4259]" title="Docker runs stop after 10s">
         Exec ≤10s
       </span>
+      <span className="text-[#626880]">|</span>
+      <FocusTimer />
+      <span className="text-[#626880]">|</span>
+      {onDownloadWorkspace ? (
+        <button
+          type="button"
+          onClick={onDownloadWorkspace}
+          className="text-[#a8abbe] hover:text-[#4ecdc4] transition-colors"
+          title="Download Workspace ZIP"
+        >
+          ↓ ZIP
+        </button>
+      ) : null}
       <span className="text-[#626880]">|</span>
       <SpotifyPlayer />
     </div>

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
-import { AiSuggestionsPanel } from "@/components/ai-suggestions-panel";
 import {
   IDE_THEMES,
   getStoredIdeTheme,
@@ -16,7 +15,6 @@ import {
 } from "@/lib/run-code";
 import {
   type AiBlock,
-  type AiEditProposal,
   type AiSelectionContext,
   type AiSuggestionMode,
   type ChatMessage,
@@ -29,7 +27,6 @@ import {
   type RunDonePayload,
   type RunOutputPayload,
   type SessionActivityEvent,
-  type SessionComment,
   type WorkspaceTemplateKind,
   type TerminalEntry,
   type WorkspaceFileLanguage,
@@ -79,7 +76,6 @@ import { IdeStatusBar } from "./ide-status-bar";
 
 const DOCUMENT_SYNC_DELAY_MS = 120;
 const MAX_SHARED_CHAT_MESSAGES = 200;
-const MAX_PRIVATE_CHAT_MESSAGES = 120;
 const MAX_RECENT_FILE_IDS = 12;
 const MAX_CLOSED_TAB_HISTORY = 12;
 
@@ -162,7 +158,7 @@ function ItecifyBreadcrumb({ activeFile, saveState, isReadOnly }: ItecifyBreadcr
   const crumbs = activeFile ? activeFile.path.split("/").filter(Boolean) : [];
 
   return (
-    <div className="flex h-[26px] flex-shrink-0 items-center border-b border-[rgba(255,255,255,0.055)] bg-[#0b0d12] px-3.5 text-[10.5px] text-[#626880]">
+    <div className="flex h-6.5 shrink-0 items-center border-b border-[rgba(255,255,255,0.055)] bg-[#0b0d12] px-3.5 text-[10.5px] text-[#626880]">
       {activeFile ? (
         <>
           {crumbs.slice(0, -1).map((c, i) => (
@@ -206,7 +202,7 @@ function PresentationOverlay({ snapshot, hasPrevious, hasNext, onPrevious, onNex
         <p className="text-[10px] font-mono uppercase tracking-widest text-[#CCA700]">Presentation Mode</p>
         <p className="text-[13px] font-medium text-[#CCCCCC] truncate mt-0.5">{snapshot.label}</p>
       </div>
-      <div className="flex items-center gap-1.5 flex-shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         <button type="button" disabled={!hasPrevious} onClick={onPrevious} className="px-3 py-1 text-[12px] text-[#CCCCCC] border border-[#3C3C3C] hover:bg-[#3C3C3C] disabled:opacity-40 disabled:cursor-not-allowed transition-colors">← Prev</button>
         <button type="button" disabled={!hasNext} onClick={onNext} className="px-3 py-1 text-[12px] text-[#CCCCCC] border border-[#3C3C3C] hover:bg-[#3C3C3C] disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Next →</button>
         <button type="button" onClick={onExit} className="px-3 py-1 text-[12px] text-[#CCA700] border border-[#CCA700]/40 hover:bg-[#CCA700]/10 transition-colors">Exit</button>
@@ -229,14 +225,9 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
   const [participants, setParticipants] = useState<Participant[]>(() => [createLocalParticipant(currentUserName, currentUserId)]);
   const [sharedChatMessages, setSharedChatMessages] = useState<ChatMessage[]>([]);
-  const [privateChatMessages, setPrivateChatMessages] = useState<ChatMessage[]>([]);
-  const [aiEditProposals, setAiEditProposals] = useState<AiEditProposal[]>([]);
   const [aiBlocks, setAiBlocks] = useState<AiBlock[]>([]);
   const [snapshots, setSnapshots] = useState<RoomSnapshot[]>([]);
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
-  const [aiRequestMode, setAiRequestMode] = useState<AiSuggestionMode | null>(null);
-  const [aiErrorMessage, setAiErrorMessage] = useState<string | null>(null);
-  const [aiBlockErrorMessage, setAiBlockErrorMessage] = useState<string | null>(null);
   const [isAiBlockLoading, setIsAiBlockLoading] = useState(false);
   const [isRunningCode, setIsRunningCode] = useState(false);
   const [consoleStatus, setConsoleStatus] = useState<RunCodeStatus>("idle");
@@ -267,9 +258,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   const [editorRevealRequest, setEditorRevealRequest] = useState<EditorRevealRequest | null>(null);
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
   const [activityKey, setActivityKey] = useState<ActivityKey>("explorer");
-  const [inspectorView, setInspectorView] = useState<string>("preview");
   const [activityFeed, setActivityFeed] = useState<SessionActivityEvent[]>([]);
-  const [sessionComments, setSessionComments] = useState<SessionComment[]>([]);
   const [editorCursorPos, setEditorCursorPos] = useState({ lineNumber: 1, column: 1 });
   const [lastRunInfo, setLastRunInfo] = useState<{ exitCode: number; failed: boolean } | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -313,7 +302,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     .filter((f): f is WorkspaceFileNode => Boolean(f));
   const visibleRemoteCursors = liveActiveFile ? remoteCursors.filter((c) => c.fileId === liveActiveFile.id) : [];
   const liveActiveFileExecutionRoute = liveActiveFile ? getFileExecutionRoute(liveActiveFile) : "unsupported";
-  const isAskingAi = aiRequestMode !== null;
   const liveActiveFileCanPreview = liveActiveFileExecutionRoute === "preview";
   const canRunCode =
     !isPresentationMode && !isRunningCode && !!liveActiveFile && connectionStatus === "connected" &&
@@ -345,7 +333,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     }));
   }, [editorView.activeFileId, editorView.openFileIds, omnibarQuery, recentFileIds, workspace]);
   const pendingAiBlocksForActiveFile = useMemo(() => aiBlocks.filter((b) => b.fileId === liveActiveFile?.id && b.status === "pending"), [aiBlocks, liveActiveFile?.id]);
-  const selectionSummary = editorSelection ? `Lines ${editorSelection.startLineNumber}-${editorSelection.endLineNumber}` : null;
   const fileSearchItems = useMemo(() => searchWorkspaceFiles(workspace, omnibarQuery).slice(0, 20).map((r) => ({ id: r.id, fileId: r.fileId, title: r.name, subtitle: r.path, icon: r.icon })), [omnibarQuery, workspace]);
   const contentSearchItems = useMemo(() => searchWorkspaceContents(workspace, omnibarQuery).map((r) => ({ id: r.id, fileId: r.fileId, title: r.name, subtitle: r.path, icon: r.icon, lineNumber: r.lineNumber, lineText: r.lineText })), [omnibarQuery, workspace]);
   const commandItems = useMemo<WorkspaceOmnibarCommandItem[]>(() => {
@@ -400,17 +387,17 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     setEditorView(normalizeEditorViewState(next, null));
     setConnectionStatus("connecting");
     setParticipants([createLocalParticipant(currentUserNameRef.current, currentUserId)]);
-    setSharedChatMessages([]); setPrivateChatMessages([]); setAiEditProposals([]); setAiBlocks([]); setSnapshots([]);
-    setTerminalEntries([]); setAiRequestMode(null); setAiErrorMessage(null); setAiBlockErrorMessage(null);
+    setSharedChatMessages([]); setAiBlocks([]); setSnapshots([]);
+    setTerminalEntries([]);
     setIsAiBlockLoading(false); setIsRunningCode(false); setConsoleStatus("idle"); setConsoleEntries([]);
     setRemoteCursors([]); setCurrentSocketId(null); setPreviewSnapshotId(null); setIsPresentationMode(false);
-    setInspectorView("preview"); setBottomPanelView("terminal"); setIsExplorerVisible(true); setIsBottomPanelVisible(true);
+    setBottomPanelView("terminal"); setIsExplorerVisible(true); setIsBottomPanelVisible(true);
     setOmnibarMode("quick-open"); setIsOmnibarOpen(false); setOmnibarQuery(""); setCommandPrompt(null);
     setProjectImportState({ isImporting: false, progress: null, message: null });
     setSaveState("saved"); setDirtyFileIds([]); setClosedTabHistory([]);
     setRecentFileIds(loadRecentFiles(roomId)); setShowHiddenFiles(loadHiddenFilesPreference());
     setShareFeedback(null); setEditorRevealRequest(null); setEditorSelection(null);
-    setActivityFeed([]); setSessionComments([]); setLastRunInfo(null);
+    setActivityFeed([]); setLastRunInfo(null);
     setEditorCursorPos({ lineNumber: 1, column: 1 });
     lastAiBlockSignatureRef.current = null;
     if (aiBlockAutoSuggestTimerRef.current) { clearTimeout(aiBlockAutoSuggestTimerRef.current); aiBlockAutoSuggestTimerRef.current = null; }
@@ -481,7 +468,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
       const activeFile = liveActiveFileRef.current;
       if (socketRef.current?.connected && activeFile) {
         flushPendingFileUpdateRef.current();
-        setInspectorView("ai-blocks"); setAiBlockErrorMessage(null); setIsAiBlockLoading(true);
+        setIsAiBlockLoading(true);
         socketRef.current.emit("ai:block:create", { roomId: roomIdRef.current, fileId: activeFile.id, code: activeFile.content, cursorLine: latestCursorRef.current?.fileId === activeFile.id ? latestCursorRef.current.position.lineNumber : null, mode: "next-line", prompt: "Suggest one short, high-value code block or next logical continuation near the current cursor. Keep it reviewable and no more than 12 lines." });
       }
       aiBlockAutoSuggestTimerRef.current = null;
@@ -504,7 +491,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   function closeOmnibar() { setIsOmnibarOpen(false); setOmnibarQuery(""); setCommandPrompt(null); }
 
   function openPreviewInspector() {
-    setInspectorView("preview");
     emitWorkspacePreviewUpdate(true, inspectorActiveFile?.id ?? liveActiveFile?.id ?? null);
   }
 
@@ -612,7 +598,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     socket.on("connect", () => { setConnectionStatus("connected"); setCurrentSocketId(socket.id ?? null); joinedParticipantNameRef.current = currentUserNameRef.current; socket.emit("room:join", { roomId, name: currentUserNameRef.current, userId: currentUserId }); });
     socket.on("disconnect", () => {
       const wasRunning = isRunningCodeRef.current;
-      setConnectionStatus("disconnected"); setCurrentSocketId(null); setAiRequestMode(null); setIsAiBlockLoading(false); setIsRunningCode(false);
+      setConnectionStatus("disconnected"); setCurrentSocketId(null); setIsAiBlockLoading(false); setIsRunningCode(false);
       setSaveState(pendingFileUpdateRef.current || dirtyFileIdsRef.current.length > 0 ? "unsaved" : "saved");
       setRemoteCursors([]); setParticipants([createLocalParticipant(currentUserNameRef.current, currentUserId)]);
       joinedParticipantNameRef.current = null;
@@ -624,10 +610,8 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
       workspaceRef.current = room.workspace; setWorkspace(room.workspace);
       setEditorView((v) => normalizeEditorViewState(room.workspace, v, room.workspace));
       setParticipants(room.participants); setAiBlocks(room.aiBlocks); setSnapshots(room.snapshots);
-      setTerminalEntries(room.terminalEntries); setAiRequestMode(null); setAiBlockErrorMessage(null); setIsAiBlockLoading(false);
+      setTerminalEntries(room.terminalEntries); setIsAiBlockLoading(false);
       setActivityFeed(room.activityFeed ?? []);
-      setSessionComments(room.sessionComments ?? []);
-      setInspectorView((v) => room.ui?.preview?.isVisible ? "preview" : v === "preview" ? "private-ai" : v);
       if (room.ui?.theme && IDE_THEMES.some((t) => t.id === room.ui?.theme)) setIdeThemeId(room.ui.theme as IdeThemeId);
       setRemoteCursors((cs) => cs.filter((c) => room.participants.some((p: Participant) => p.socketId === c.socketId)));
     });
@@ -637,7 +621,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     });
     socket.on("session:comment:created", ({ comment }) => {
       if (comment.roomId !== roomId) return;
-      setSessionComments((prev) => [comment, ...prev.filter((c) => c.id !== comment.id)].slice(0, 200));
     });
     socket.on("room:participants", (ps) => {
       setParticipants(ps.length > 0 ? ps : [createLocalParticipant(currentUserNameRef.current, currentUserId)]);
@@ -646,7 +629,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     socket.on("workspace:file:updated", ({ fileId, content }) => applyRemoteFileUpdate(fileId, content));
     socket.on("workspace:view", ({ roomId: rid, activeFileId, openFileIds }) => { if (rid !== roomId) return; setEditorView((v) => normalizeEditorViewState(workspaceRef.current, v, { activeFileId, openFileIds })); });
     socket.on("workspace:file:language", ({ roomId: rid, fileId, language }) => { if (rid !== roomId) return; setWorkspace((ws) => updateWorkspaceFileLanguage(ws, fileId, language)); });
-    socket.on("workspace:preview", ({ roomId: rid, preview }) => { if (rid !== roomId) return; setInspectorView((v) => preview.isVisible ? "preview" : v === "preview" ? "private-ai" : v); });
+    socket.on("workspace:preview", ({ roomId: rid }) => { if (rid !== roomId) return; });
     socket.on("workspace:theme", ({ roomId: rid, theme }) => { if (rid !== roomId || !IDE_THEMES.some((t) => t.id === theme)) return; setIdeThemeId(theme as IdeThemeId); });
     socket.on("cursor:updated", (cursor) => { if (cursor.socketId === socket.id) return; setRemoteCursors((cs) => [...cs.filter((c) => c.socketId !== cursor.socketId), cursor]); });
     socket.on("cursor:cleared", ({ socketId }) => { setRemoteCursors((cs) => cs.filter((c) => c.socketId !== socketId)); });
@@ -655,16 +638,16 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     socket.on("chat:shared:init", ({ roomId: rid, messages }) => { if (rid !== roomId) return; setSharedChatMessages(messages); });
     socket.on("chat:shared:message", ({ message }) => { if (message.roomId !== roomId) return; setSharedChatMessages((ms) => upsertChatMessage(ms, message, MAX_SHARED_CHAT_MESSAGES)); });
     socket.on("chat:shared:message:updated", ({ message }) => { if (message.roomId !== roomId) return; setSharedChatMessages((ms) => upsertChatMessage(ms, message, MAX_SHARED_CHAT_MESSAGES)); });
-    socket.on("chat:private:init", ({ roomId: rid, messages }) => { if (rid !== roomId) return; setPrivateChatMessages(messages); });
-    socket.on("chat:private:message", ({ message }) => { if (message.roomId !== roomId) return; setPrivateChatMessages((ms) => upsertChatMessage(ms, message, MAX_PRIVATE_CHAT_MESSAGES)); if (message.authorType !== "user") setAiRequestMode(null); });
-    socket.on("chat:private:message:updated", ({ message }) => { if (message.roomId !== roomId) return; setPrivateChatMessages((ms) => upsertChatMessage(ms, message, MAX_PRIVATE_CHAT_MESSAGES)); if (message.authorType !== "user") setAiRequestMode(null); });
-    socket.on("ai:proposal:init", ({ roomId: rid, proposals }) => { if (rid !== roomId) return; setAiEditProposals(proposals); });
-    socket.on("ai:proposal:created", ({ proposal }) => { setAiEditProposals((ps) => [proposal, ...ps.filter((p) => p.id !== proposal.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setAiErrorMessage(null); setAiRequestMode(null); setInspectorView("private-ai"); });
-    socket.on("ai:proposal:updated", ({ proposal }) => { setAiEditProposals((ps) => { const has = ps.some((p) => p.id === proposal.id); return (has ? ps.map((p) => p.id === proposal.id ? proposal : p) : [proposal, ...ps]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }); });
-    socket.on("ai:proposal:error", ({ roomId: rid, message }) => { if (rid !== roomId) return; setAiErrorMessage(message); setAiRequestMode(null); setInspectorView("private-ai"); });
-    socket.on("ai:block:created", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => [block, ...bs.filter((b) => b.id !== block.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setAiBlockErrorMessage(null); setIsAiBlockLoading(false); setInspectorView("ai-blocks"); });
+    socket.on("chat:private:init", ({ roomId: rid }) => { if (rid !== roomId) return; });
+    socket.on("chat:private:message", ({ message }) => { if (message.roomId !== roomId) return; });
+    socket.on("chat:private:message:updated", ({ message }) => { if (message.roomId !== roomId) return; });
+    socket.on("ai:proposal:init", ({ roomId: rid }) => { if (rid !== roomId) return; });
+    socket.on("ai:proposal:created", () => { });
+    socket.on("ai:proposal:updated", () => { });
+    socket.on("ai:proposal:error", ({ roomId: rid }) => { if (rid !== roomId) return; });
+    socket.on("ai:block:created", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => [block, ...bs.filter((b) => b.id !== block.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setIsAiBlockLoading(false); });
     socket.on("ai:block:updated", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => { const has = bs.some((b) => b.id === block.id); return (has ? bs.map((b) => b.id === block.id ? block : b) : [block, ...bs]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }); });
-    socket.on("ai:block:error", ({ roomId: rid, message }) => { if (rid !== roomId) return; lastAiBlockSignatureRef.current = null; setAiBlockErrorMessage(message); setIsAiBlockLoading(false); setInspectorView("ai-blocks"); });
+    socket.on("ai:block:error", ({ roomId: rid }) => { if (rid !== roomId) return; lastAiBlockSignatureRef.current = null; setIsAiBlockLoading(false); });
     socket.on("snapshot:created", ({ snapshot }) => { setSnapshots((ss) => [snapshot, ...ss.filter((s) => s.id !== snapshot.id)].slice(0, 12)); });
     socket.on("terminal:history:init", ({ roomId: rid, entries }) => { if (rid !== roomId) return; setTerminalEntries(entries); });
     socket.on("terminal:entry", ({ entry }) => { if (entry.roomId !== roomId) return; setTerminalEntries((es) => [...es, entry].slice(-600)); });
@@ -738,7 +721,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
       fileId && latestCursorRef.current?.fileId === fileId
         ? latestCursorRef.current.position.lineNumber
         : null;
-    flushPendingFileUpdate(); setInspectorView("private-ai"); setAiRequestMode(mode); setAiErrorMessage(null);
+    flushPendingFileUpdate();
     socketRef.current.emit("chat:private:send", {
       roomId,
       fileId: fileId ?? null,
@@ -750,27 +733,10 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     });
   }
 
-  function requestPrivateAiPrompt(mode: AiSuggestionMode, prompt: string) {
-    if (isAskingAi || !liveActiveFile) return;
-    sendPrivateAiRequest({ prompt, mode, intent: "edit", fileId: liveActiveFile.id, selection: editorSelection });
-  }
-
-  function handleExplainSelectedCode() { if (!liveActiveFile) return; sendPrivateAiRequest({ prompt: editorSelection ? "Explain the selected code." : "Explain the active file.", mode: "assist", intent: "explain", fileId: liveActiveFile.id, selection: editorSelection }); }
-  function handleGenerateFunction() { requestPrivateAiPrompt("assist", editorSelection ? "Generate a function for the selected code context. Return explicit edits." : "Generate a new function fitting this file. Return explicit edits."); }
-  function handleRefactorSelection() { requestPrivateAiPrompt("assist", editorSelection ? "Refactor the selected code. Return explicit line-by-line edits." : "Refactor the active file. Return explicit line-by-line edits."); }
-  function handleFixBugs() { requestPrivateAiPrompt("assist", editorSelection ? "Fix bugs in the selected code. Return explicit line-by-line fixes." : "Fix bugs in the active file. Return explicit line-by-line fixes."); }
-  function handleAddComments() { requestPrivateAiPrompt("assist", editorSelection ? "Add explanatory comments to the selected code. Return explicit edits." : "Add explanatory comments to the active file. Return explicit edits."); }
   function handleSummarizeProject() {
     sendPrivateAiRequest({ prompt: "", mode: "assist", intent: "summarize", fileId: liveActiveFile?.id ?? null });
   }
-  function handleAddSessionComment(body: string, lineNumber: number) {
-    if (!liveActiveFile || !socketRef.current?.connected) return;
-    socketRef.current.emit("session:comment:add", { roomId: roomIdRef.current, fileId: liveActiveFile.id, lineNumber, body });
-  }
   function handleGenerateFilesFromPrompt(prompt: string, fileId?: string | null) { sendPrivateAiRequest({ prompt, mode: "assist", intent: "generate-files", fileId: fileId ?? liveActiveFile?.id ?? null, selection: editorSelection }); }
-  function handleGenerateFlaskStarter() { handleGenerateFilesFromPrompt("Create a small Flask starter project with app.py, templates, static assets, and requirements.txt."); }
-  function handleGenerateCppStarter() { handleGenerateFilesFromPrompt("Create a C++ console starter with main.cpp."); }
-  function handleGenerateLandingPageStarter() { handleGenerateFilesFromPrompt("Create a static landing page: index.html, style.css, script.js."); }
 
 
   
@@ -812,7 +778,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   }
 
   function handleSendSharedChatMessage(content: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("chat:shared:send", { roomId, content }); }
-  function handleSendPrivateAiPrompt(content: string) { if (!liveActiveFile) return; sendPrivateAiRequest({ prompt: content, mode: "assist", intent: "edit", fileId: liveActiveFile.id, selection: editorSelection }); }
 
   async function handleDownloadWorkspace() {
     try { const blob = await createWorkspaceZipBlob(workspaceRef.current); downloadBlob(blob, `itecify-${roomId.toLowerCase()}.zip`); showShareFeedback("ZIP downloaded"); }
@@ -832,18 +797,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     downloadBlob(new Blob([file.content], { type: "text/plain;charset=utf-8" }), file.name);
     showShareFeedback("Downloaded");
   }
-
-
-
-  function updateProposalLineStatus(proposalId: string, changeId: string, status: "approved" | "rejected") {
-    setAiEditProposals((ps) => ps.map((p) => p.id !== proposalId ? p : { ...p, changes: p.changes.map((c) => c.id === changeId ? { ...c, status } : c) }));
-  }
-
-  function handleApproveAiLine(proposalId: string, changeId: string) { if (!socketRef.current?.connected) return; updateProposalLineStatus(proposalId, changeId, "approved"); socketRef.current.emit("ai:proposal:approve-line", { roomId, proposalId, changeId }); }
-  function handleRejectAiLine(proposalId: string, changeId: string) { if (!socketRef.current?.connected) return; updateProposalLineStatus(proposalId, changeId, "rejected"); socketRef.current.emit("ai:proposal:reject-line", { roomId, proposalId, changeId }); }
-  function handleApplyAiProposal(proposalId: string) { if (!socketRef.current?.connected) return; flushPendingFileUpdate(); socketRef.current.emit("ai:proposal:apply", { roomId, proposalId }); }
-  function handleAcceptAiBlock(blockId: string) { if (!socketRef.current?.connected) return; flushPendingFileUpdate(); socketRef.current.emit("ai:block:accept", { roomId, blockId }); }
-  function handleRejectAiBlock(blockId: string) { if (!socketRef.current?.connected) return; socketRef.current.emit("ai:block:reject", { roomId, blockId }); }
 
   async function handleLogout() { setIsSigningOut(true); try { await signOutUser(); } finally { setIsSigningOut(false); } }
 
@@ -963,7 +916,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
 
   return (
     <div
-      className="ide-theme-root flex h-full w-full flex-col overflow-hidden bg-[var(--bg)] text-[var(--text-primary)]"
+      className="ide-theme-root flex h-full w-full flex-col overflow-hidden bg-background text-foreground"
       data-ide-theme={ideThemeId}
       style={{
         fontFamily:
@@ -1005,7 +958,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
         }}
         onPreview={openPreviewInspector}
         onFocusAi={() => {
-          setInspectorView("private-ai");
           openOmnibar("command");
           setOmnibarQuery("ai");
         }}
@@ -1016,7 +968,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
           <ItecifyActivityBar active={activityKey} onSelect={handleItecifyActivity} />
 
           <div
-            className="flex min-h-0 flex-shrink-0 flex-col overflow-hidden border-r border-[rgba(255,255,255,0.055)] transition-[width] duration-150"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-[rgba(255,255,255,0.055)] transition-[width] duration-150"
             style={{ width: isExplorerVisible ? 220 : 0 }}
           >
             {isExplorerVisible ? (
@@ -1047,7 +999,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
                     onAiFileAction={handleExplorerAiAction}
                   />
                 </div>
-                <div className="flex-shrink-0 border-t border-[rgba(255,255,255,0.055)] px-3 py-2">
+                <div className="shrink-0 border-t border-[rgba(255,255,255,0.055)] px-3 py-2">
                   <p className="text-[9.5px] font-medium uppercase tracking-[0.12em] text-[#626880]">Selection</p>
                   <p className="mt-1 truncate font-[family-name:var(--font-jetbrains-mono)] text-[10px] text-[#a8abbe]">
                     {liveActiveFile ? liveActiveFile.path : "Workspace root"}
@@ -1067,7 +1019,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
           <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden bg-[#0b0d12]">
-                <div className="flex-shrink-0 overflow-x-auto overflow-y-hidden border-b border-[rgba(255,255,255,0.055)] bg-[#0f1118]">
+                <div className="shrink-0 overflow-x-auto overflow-y-hidden border-b border-[rgba(255,255,255,0.055)] bg-[#0f1118]">
                   <IdeEditorTabs
                     tabs={displayedOpenFiles.map((file) => ({
                       id: file.id,
@@ -1151,10 +1103,11 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
                 isRunningCode={isRunningCode}
                 lastRunExitCode={lastRunInfo?.exitCode ?? null}
                 lastRunFailed={lastRunInfo?.failed ?? false}
+                onDownloadWorkspace={handleDownloadWorkspace}
               />
             </div>
 
-            <div className="w-[min(280px,32vw)] flex-shrink-0 overflow-hidden border-l border-[rgba(255,255,255,0.055)] bg-[#0f1118] min-h-0">
+            <div className="w-[min(280px,32vw)] shrink-0 overflow-hidden border-l border-[rgba(255,255,255,0.055)] bg-[#0f1118] min-h-0">
               <CollaborationSidebar
                 messages={sharedChatMessages}
                 participants={participants}
@@ -1171,7 +1124,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
           </div>
 
           <div
-            className="flex-shrink-0 overflow-hidden border-t border-[rgba(255,255,255,0.055)] transition-all duration-150"
+            className="shrink-0 overflow-hidden border-t border-[rgba(255,255,255,0.055)] transition-all duration-150"
             style={{ height: isBottomPanelVisible ? "clamp(140px, 28vh, 300px)" : 0 }}
           >
             {isBottomPanelVisible && (
@@ -1213,7 +1166,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
 
       {shortcutsOpen ? (
         <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/55 p-4"
+          className="fixed inset-0 z-200 flex items-center justify-center bg-black/55 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Keyboard shortcuts"

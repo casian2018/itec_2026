@@ -5,6 +5,7 @@ import { SharedChatPanel } from "./shared-chat-panel";
 import { ItecifySidebarPresence } from "./itecify-workspace-chrome";
 import { SessionActivityPanel } from "./session-activity-panel";
 import { SpotifyPlayer } from "./spotify-player";
+import { FocusTimer } from "./focus-timer";
 import {
   type ChatMessage,
   type Participant,
@@ -82,7 +83,8 @@ export function CollaborationSidebar({
         )}
         {activeTab === "activity" && <SessionActivityPanel entries={activity} />}
       </div>
-      <div className="flex-shrink-0 border-t border-[var(--line)] p-2">
+      <div className="flex-shrink-0 border-t border-[var(--line)] p-2 space-y-2">
+        <FocusTimer />
         <SpotifyPlayer />
       </div>
     </div>
