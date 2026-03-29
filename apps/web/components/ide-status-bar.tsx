@@ -1,7 +1,5 @@
 "use client";
 
-import { FocusTimer } from "./focus-timer";
-import { SpotifyPlayer } from "./spotify-player";
 import type { ConnectionStatus } from "@/components/itecify-workspace-chrome";
 
 type SaveState = "saved" | "saving" | "unsaved";
@@ -15,7 +13,6 @@ type IdeStatusBarProps = {
   isRunningCode: boolean;
   lastRunExitCode: number | null;
   lastRunFailed: boolean;
-  onDownloadWorkspace?: () => void;
 };
 
 export function IdeStatusBar({
@@ -27,7 +24,6 @@ export function IdeStatusBar({
   isRunningCode,
   lastRunExitCode,
   lastRunFailed,
-  onDownloadWorkspace,
 }: IdeStatusBarProps) {
   const conn =
     connectionStatus === "connected"
@@ -70,21 +66,6 @@ export function IdeStatusBar({
       <span className="text-[#3d4259]" title="Docker runs stop after 10s">
         Exec ≤10s
       </span>
-      <span className="text-[#626880]">|</span>
-      <FocusTimer />
-      <span className="text-[#626880]">|</span>
-      {onDownloadWorkspace ? (
-        <button
-          type="button"
-          onClick={onDownloadWorkspace}
-          className="text-[#a8abbe] hover:text-[#4ecdc4] transition-colors"
-          title="Download Workspace ZIP"
-        >
-          ↓ ZIP
-        </button>
-      ) : null}
-      <span className="text-[#626880]">|</span>
-      <SpotifyPlayer />
     </div>
   );
 }

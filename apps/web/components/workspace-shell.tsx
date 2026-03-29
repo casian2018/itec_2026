@@ -76,6 +76,7 @@ import { IdeStatusBar } from "./ide-status-bar";
 
 const DOCUMENT_SYNC_DELAY_MS = 120;
 const MAX_SHARED_CHAT_MESSAGES = 200;
+const MAX_PRIVATE_CHAT_MESSAGES = 120;
 const MAX_RECENT_FILE_IDS = 12;
 const MAX_CLOSED_TAB_HISTORY = 12;
 
@@ -225,7 +226,9 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
   const [participants, setParticipants] = useState<Participant[]>(() => [createLocalParticipant(currentUserName, currentUserId)]);
   const [sharedChatMessages, setSharedChatMessages] = useState<ChatMessage[]>([]);
+  const [privateChatMessages, setPrivateChatMessages] = useState<ChatMessage[]>([]);
   const [aiBlocks, setAiBlocks] = useState<AiBlock[]>([]);
+  const [aiBlockErrorMessage, setAiBlockErrorMessage] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<RoomSnapshot[]>([]);
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
   const [isAiBlockLoading, setIsAiBlockLoading] = useState(false);
@@ -387,7 +390,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     setEditorView(normalizeEditorViewState(next, null));
     setConnectionStatus("connecting");
     setParticipants([createLocalParticipant(currentUserNameRef.current, currentUserId)]);
-    setSharedChatMessages([]); setAiBlocks([]); setSnapshots([]);
+    setSharedChatMessages([]); setPrivateChatMessages([]); setAiBlocks([]); setAiBlockErrorMessage(null); setSnapshots([]);
     setTerminalEntries([]);
     setIsAiBlockLoading(false); setIsRunningCode(false); setConsoleStatus("idle"); setConsoleEntries([]);
     setRemoteCursors([]); setCurrentSocketId(null); setPreviewSnapshotId(null); setIsPresentationMode(false);
@@ -638,16 +641,16 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     socket.on("chat:shared:init", ({ roomId: rid, messages }) => { if (rid !== roomId) return; setSharedChatMessages(messages); });
     socket.on("chat:shared:message", ({ message }) => { if (message.roomId !== roomId) return; setSharedChatMessages((ms) => upsertChatMessage(ms, message, MAX_SHARED_CHAT_MESSAGES)); });
     socket.on("chat:shared:message:updated", ({ message }) => { if (message.roomId !== roomId) return; setSharedChatMessages((ms) => upsertChatMessage(ms, message, MAX_SHARED_CHAT_MESSAGES)); });
-    socket.on("chat:private:init", ({ roomId: rid }) => { if (rid !== roomId) return; });
-    socket.on("chat:private:message", ({ message }) => { if (message.roomId !== roomId) return; });
-    socket.on("chat:private:message:updated", ({ message }) => { if (message.roomId !== roomId) return; });
+    socket.on("chat:private:init", ({ roomId: rid, messages }) => { if (rid !== roomId) return; setPrivateChatMessages(messages); });
+    socket.on("chat:private:message", ({ message }) => { if (message.roomId !== roomId) return; setPrivateChatMessages((ms) => upsertChatMessage(ms, message, MAX_PRIVATE_CHAT_MESSAGES)); });
+    socket.on("chat:private:message:updated", ({ message }) => { if (message.roomId !== roomId) return; setPrivateChatMessages((ms) => upsertChatMessage(ms, message, MAX_PRIVATE_CHAT_MESSAGES)); });
     socket.on("ai:proposal:init", ({ roomId: rid }) => { if (rid !== roomId) return; });
     socket.on("ai:proposal:created", () => { });
     socket.on("ai:proposal:updated", () => { });
     socket.on("ai:proposal:error", ({ roomId: rid }) => { if (rid !== roomId) return; });
-    socket.on("ai:block:created", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => [block, ...bs.filter((b) => b.id !== block.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setIsAiBlockLoading(false); });
+    socket.on("ai:block:created", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => [block, ...bs.filter((b) => b.id !== block.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); setAiBlockErrorMessage(null); setIsAiBlockLoading(false); });
     socket.on("ai:block:updated", ({ block }) => { if (block.roomId !== roomId) return; setAiBlocks((bs) => { const has = bs.some((b) => b.id === block.id); return (has ? bs.map((b) => b.id === block.id ? block : b) : [block, ...bs]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }); });
-    socket.on("ai:block:error", ({ roomId: rid }) => { if (rid !== roomId) return; lastAiBlockSignatureRef.current = null; setIsAiBlockLoading(false); });
+    socket.on("ai:block:error", ({ roomId: rid, message }) => { if (rid !== roomId) return; lastAiBlockSignatureRef.current = null; setAiBlockErrorMessage(message); setIsAiBlockLoading(false); });
     socket.on("snapshot:created", ({ snapshot }) => { setSnapshots((ss) => [snapshot, ...ss.filter((s) => s.id !== snapshot.id)].slice(0, 12)); });
     socket.on("terminal:history:init", ({ roomId: rid, entries }) => { if (rid !== roomId) return; setTerminalEntries(entries); });
     socket.on("terminal:entry", ({ entry }) => { if (entry.roomId !== roomId) return; setTerminalEntries((es) => [...es, entry].slice(-600)); });
