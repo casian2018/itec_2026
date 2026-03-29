@@ -61,27 +61,21 @@ import { CollaborativeEditor } from "./collaborative-editor";
 import { IdeBottomPanel } from "./ide-bottom-panel";
 import { IdeEditorTabs } from "./ide-editor-tabs";
 import { IdeFileExplorer } from "./ide-file-explorer";
-import { IdePreviewPanel } from "./ide-preview-panel";
-import { IdeSidePanel } from "./ide-side-panel";
-import { PrivateAiChatPanel } from "./private-ai-chat-panel";
-import { ConsolePanel } from "./console-panel";
-import {
-  ItecifyActivityBar,
-  ItecifyCmdBar,
-  ItecifySidebarPresence,
-  ItecifyTopBar,
-  type ActivityKey,
-} from "./itecify-workspace-chrome";
-import { SharedChatPanel } from "./shared-chat-panel";
-import { IdeStatusBar } from "./ide-status-bar";
-import { SessionActivityPanel } from "./session-activity-panel";
-import { SessionCommentsPanel } from "./session-comments-panel";
+import { CollaborationSidebar } from "./collaboration-sidebar";
 import {
   WorkspaceOmnibar,
   type WorkspaceCommandPrompt,
   type WorkspaceOmnibarCommandItem,
   type WorkspaceOmnibarMode,
 } from "./workspace-omnibar";
+import {
+  ItecifyTopBar,
+  ItecifyCmdBar,
+  ItecifyActivityBar,
+  ItecifySidebarPresence,
+  type ActivityKey,
+} from "./itecify-workspace-chrome";
+import { IdeStatusBar } from "./ide-status-bar";
 
 const DOCUMENT_SYNC_DELAY_MS = 120;
 const MAX_SHARED_CHAT_MESSAGES = 200;
@@ -91,14 +85,6 @@ const MAX_CLOSED_TAB_HISTORY = 12;
 
 type SaveState = "saved" | "saving" | "unsaved";
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
-type InspectorView =
-  | "preview"
-  | "shared-chat"
-  | "ai-blocks"
-  | "private-ai"
-  | "console-output"
-  | "activity"
-  | "comments";
 type BottomPanelView = "terminal" | "output" | "timeline";
 type EditorRevealRequest = { fileId: string; lineNumber: number; nonce: number };
 type PendingFileUpdate = { fileId: string; content: string };
@@ -261,7 +247,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   const [currentSocketId, setCurrentSocketId] = useState<string | null>(null);
   const [previewSnapshotId, setPreviewSnapshotId] = useState<string | null>(null);
   const [isPresentationMode, setIsPresentationMode] = useState(false);
-  const [inspectorView, setInspectorView] = useState<InspectorView>("preview");
+  
   const [bottomPanelView, setBottomPanelView] = useState<BottomPanelView>("terminal");
   const [isExplorerVisible, setIsExplorerVisible] = useState(true);
   const [isBottomPanelVisible, setIsBottomPanelVisible] = useState(true);
@@ -281,6 +267,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   const [editorRevealRequest, setEditorRevealRequest] = useState<EditorRevealRequest | null>(null);
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
   const [activityKey, setActivityKey] = useState<ActivityKey>("explorer");
+  const [inspectorView, setInspectorView] = useState<string>("preview");
   const [activityFeed, setActivityFeed] = useState<SessionActivityEvent[]>([]);
   const [sessionComments, setSessionComments] = useState<SessionComment[]>([]);
   const [editorCursorPos, setEditorCursorPos] = useState({ lineNumber: 1, column: 1 });
@@ -786,10 +773,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
   function handleGenerateLandingPageStarter() { handleGenerateFilesFromPrompt("Create a static landing page: index.html, style.css, script.js."); }
 
 
-  function handleTogglePreview() {
-    if (inspectorView === "preview") { setInspectorView("private-ai"); emitWorkspacePreviewUpdate(false, null); return; }
-    openPreviewInspector();
-  }
+  
 
   function downloadBlob(blob: Blob, filename: string) {
     const url = window.URL.createObjectURL(blob);
@@ -975,30 +959,6 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
     setOmnibarQuery("theme");
   }
 
-  function handleSelectRightTab(
-    tab: "ai" | "shared-chat" | "preview" | "console-output" | "activity" | "comments",
-  ) {
-    if (tab === "shared-chat") setInspectorView("shared-chat");
-    else if (tab === "preview") setInspectorView("preview");
-    else if (tab === "console-output") setInspectorView("console-output");
-    else if (tab === "activity") setInspectorView("activity");
-    else if (tab === "comments") setInspectorView("comments");
-    else setInspectorView("private-ai");
-  }
-
-  const rightTabActiveId =
-    inspectorView === "shared-chat"
-      ? "shared-chat"
-      : inspectorView === "preview"
-        ? "preview"
-        : inspectorView === "console-output"
-          ? "console-output"
-          : inspectorView === "activity"
-            ? "activity"
-            : inspectorView === "comments"
-              ? "comments"
-              : "ai";
-
   const isTerminalLayoutActive = isBottomPanelVisible && bottomPanelView === "terminal";
 
   return (
@@ -1043,8 +1003,7 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
         onFormat={() => {
           if (canFormatFile) handleFormatActiveFile();
         }}
-        onPreview={handleTogglePreview}
-        onFocusAi={() => handleSelectRightTab("ai")}
+        
       />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1191,108 +1150,18 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
             </div>
 
             <div className="w-[min(280px,32vw)] flex-shrink-0 overflow-hidden border-l border-[rgba(255,255,255,0.055)] bg-[#0f1118] min-h-0">
-              <IdeSidePanel
-                title=""
-                subtitle=""
-                hideChromeLabels
-                tabs={[
-                  { id: "ai", label: "AI" },
-                  { id: "shared-chat", label: "Chat" },
-                  { id: "preview", label: "Preview" },
-                  { id: "console-output", label: "Output" },
-                  { id: "activity", label: "Activity" },
-                  { id: "comments", label: "Comments" },
-                ]}
-                activeTabId={rightTabActiveId}
-                onSelectTab={(id) =>
-                  handleSelectRightTab(
-                    id === "shared-chat"
-                      ? "shared-chat"
-                      : id === "preview"
-                        ? "preview"
-                        : id === "console-output"
-                          ? "console-output"
-                          : id === "activity"
-                            ? "activity"
-                            : id === "comments"
-                              ? "comments"
-                              : "ai",
-                  )
-                }
-              >
-                <div className="h-full min-h-0 overflow-hidden">
-                  {rightTabActiveId === "preview" && (
-                    <IdePreviewPanel
-                      activeFile={inspectorActiveFile ?? displayedOpenFiles[0] ?? workspaceFiles[0] ?? null}
-                      workspace={workspace}
-                      connectionLabel={connectionStatus === "connected" ? "Connected" : connectionStatus === "connecting" ? "Connecting" : "Disconnected"}
-                      participantCount={participants.length}
-                      snapshotCount={snapshots.length}
-                      terminalEntryCount={terminalEntries.length}
-                      isRunningCode={isRunningCode}
-                    />
-                  )}
-                  {rightTabActiveId === "shared-chat" && (
-                    <SharedChatPanel
-                      messages={sharedChatMessages}
-                      canSend={connectionStatus === "connected"}
-                      currentUserId={currentUserId}
-                      onSend={handleSendSharedChatMessage}
-                    />
-                  )}
-                  {rightTabActiveId === "console-output" && (
-                    <ConsolePanel entries={consoleEntries} status={consoleStatus} />
-                  )}
-                  {rightTabActiveId === "activity" && (
-                    <SessionActivityPanel entries={activityFeed} />
-                  )}
-                  {rightTabActiveId === "comments" && (
-                    <SessionCommentsPanel
-                      comments={sessionComments}
-                      activeFileId={liveActiveFile?.id ?? null}
-                      activeFilePath={liveActiveFile?.path ?? null}
-                      canSend={connectionStatus === "connected"}
-                      onAddComment={handleAddSessionComment}
-                    />
-                  )}
-                  {rightTabActiveId === "ai" && (
-                    <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-2">
-                      <AiSuggestionsPanel
-                        blocks={aiBlocks}
-                        isLoading={isAiBlockLoading}
-                        errorMessage={aiBlockErrorMessage}
-                        onAccept={handleAcceptAiBlock}
-                        onReject={handleRejectAiBlock}
-                      />
-                      <PrivateAiChatPanel
-                        activeFile={liveActiveFile}
-                        messages={privateChatMessages}
-                        proposals={aiEditProposals}
-                        isLoading={isAskingAi}
-                        errorMessage={aiErrorMessage}
-                        canSend={connectionStatus === "connected"}
-                        currentUserId={currentUserId}
-                        selectionSummary={selectionSummary}
-                        hasSelection={Boolean(editorSelection?.selectedText.trim())}
-                        onSendPrompt={handleSendPrivateAiPrompt}
-                        onExplainSelection={handleExplainSelectedCode}
-                        onGenerateFunction={handleGenerateFunction}
-                        onRefactorSelection={handleRefactorSelection}
-                        onFixBugs={handleFixBugs}
-                      onAddComments={handleAddComments}
-                      onSummarizeProject={handleSummarizeProject}
-                      onGenerateFilesFromPrompt={handleGenerateFilesFromPrompt}
-                        onGenerateFlaskStarter={handleGenerateFlaskStarter}
-                        onGenerateCppStarter={handleGenerateCppStarter}
-                        onGenerateLandingPageStarter={handleGenerateLandingPageStarter}
-                        onApproveLine={handleApproveAiLine}
-                        onRejectLine={handleRejectAiLine}
-                        onApplyProposal={handleApplyAiProposal}
-                      />
-                    </div>
-                  )}
-                </div>
-              </IdeSidePanel>
+              <CollaborationSidebar
+                messages={sharedChatMessages}
+                participants={participants}
+                activity={activityFeed}
+                currentUserId={currentUserId}
+                onSendMessage={handleSendSharedChatMessage}
+                canSend={connectionStatus === "connected"}
+                currentUserName={currentUserName}
+                currentUserSocketId={currentSocketId}
+                workspaceFiles={workspaceFiles.map((f) => ({ id: f.id, name: f.name }))}
+                remoteCursors={remoteCursors}
+              />
             </div>
           </div>
 
