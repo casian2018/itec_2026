@@ -172,48 +172,6 @@ export function SharedTerminalPanel({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--panel-bg)]">
-      <div className="mb-0 flex items-center justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
-        <div className="min-w-0">
-          <h2 className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)]">
-            Integrated Terminal
-          </h2>
-          <p className="mt-1 text-[12px] leading-5 text-[var(--text-muted)]">
-            Shared Linux-like terminal scoped to session {sessionLabel}. Click
-            inside the terminal and type.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={!canInteract}
-            onClick={() => onCommand("help")}
-            className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Help
-          </button>
-          <button
-            type="button"
-            disabled={!canRunActiveFile}
-            onClick={onRunActiveFile}
-            className="border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:brightness-100"
-            title={activeFileLabel ? `Run ${activeFileLabel}` : "Run active file"}
-          >
-            Run Active
-          </button>
-          <span className="border border-cyan-400/14 bg-cyan-400/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-300">
-            {canInteract ? "Live PTY" : "Read Only"}
-          </span>
-          <button
-            type="button"
-            disabled={!canInteract}
-            onClick={onClear}
-            className="border border-[var(--line)] bg-[var(--bg-panel-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] transition hover:border-[var(--line-strong)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Clear
-          </button>
-        </div>
-      </div>
-
       <div className="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
         <div ref={terminalContainerRef} className="h-full w-full px-2 py-2" />
         {!canInteract ? (

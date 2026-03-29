@@ -138,7 +138,41 @@ export async function initiateSpotifyAuth(): Promise<void> {
     code_challenge: codeChallenge,
   });
   
-  window.location.href = `${SPOTIFY_AUTH_URL}?${params.toString()}`;
+  // Open popup window for Spotify auth
+  const width = 500;
+  const height = 700;
+  const left = window.screenX + (window.outerWidth - width) / 2;
+  const top = window.screenY + (window.outerHeight - height) / 2;
+  
+  const popup = window.open(
+    `${SPOTIFY_AUTH_URL}?${params.toString()}`,
+    "Spotify Auth",
+    `width=${width},height=${height},left=${left},top=${top}`
+  );
+  
+  // Listen for messages from the popup
+  const handleMessage = (event: MessageEvent) => {
+    if (event.origin !== window.location.origin) return;
+    
+    if (event.data.type === "spotify-auth-success") {
+      window.removeEventListener("message", handleMessage);
+      // Reload the page to update the Spotify player state
+      window.location.reload();
+    } else if (event.data.type === "spotify-auth-error") {
+      window.removeEventListener("message", handleMessage);
+      console.error("Spotify auth error:", event.data.error);
+    }
+  };
+  
+  window.addEventListener("message", handleMessage);
+  
+  // Check if popup was closed without completing auth
+  const checkPopupClosed = setInterval(() => {
+    if (popup && popup.closed) {
+      clearInterval(checkPopupClosed);
+      window.removeEventListener("message", handleMessage);
+    }
+  }, 1000);
 }
 
 // Exchange authorization code for tokens

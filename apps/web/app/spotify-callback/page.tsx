@@ -36,16 +36,21 @@ export default function SpotifyCallbackPage() {
           setTimeout(() => {
             setStatus("success");
           }, 0);
-          // Redirect back to the original path if stored
-          const redirectPath = localStorage.getItem("spotify_auth_redirect");
-          localStorage.removeItem("spotify_auth_redirect");
           
-          // Redirect after a short delay to show success message
+          // Notify parent window and close popup
           setTimeout(() => {
-            if (redirectPath && redirectPath !== window.location.pathname) {
-              window.location.href = redirectPath;
+            if (window.opener) {
+              window.opener.postMessage({ type: "spotify-auth-success" }, window.location.origin);
+              window.close();
             } else {
-              window.location.href = "/";
+              // Fallback: redirect if not in popup
+              const redirectPath = localStorage.getItem("spotify_auth_redirect");
+              localStorage.removeItem("spotify_auth_redirect");
+              if (redirectPath && redirectPath !== window.location.pathname) {
+                window.location.href = redirectPath;
+              } else {
+                window.location.href = "/";
+              }
             }
           }, 1000);
         } else {
@@ -53,6 +58,14 @@ export default function SpotifyCallbackPage() {
             setStatus("error");
             setErrorMessage("Failed to authenticate with Spotify");
           }, 0);
+          
+          // Notify parent window of error and close popup
+          setTimeout(() => {
+            if (window.opener) {
+              window.opener.postMessage({ type: "spotify-auth-error", error: "Failed to authenticate" }, window.location.origin);
+              window.close();
+            }
+          }, 2000);
         }
       })
       .catch((err) => {
@@ -61,6 +74,14 @@ export default function SpotifyCallbackPage() {
           setErrorMessage("Failed to authenticate with Spotify");
         }, 0);
         console.error("Spotify auth error:", err);
+        
+        // Notify parent window of error and close popup
+        setTimeout(() => {
+          if (window.opener) {
+            window.opener.postMessage({ type: "spotify-auth-error", error: err.message }, window.location.origin);
+            window.close();
+          }
+        }, 2000);
       });
   }, []);
 

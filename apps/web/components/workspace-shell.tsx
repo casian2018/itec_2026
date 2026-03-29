@@ -1003,7 +1003,12 @@ export function WorkspaceShell({ roomId, currentUserName, currentUserId }: Works
         onFormat={() => {
           if (canFormatFile) handleFormatActiveFile();
         }}
-        
+        onPreview={openPreviewInspector}
+        onFocusAi={() => {
+          setInspectorView("private-ai");
+          openOmnibar("command");
+          setOmnibarQuery("ai");
+        }}
       />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
